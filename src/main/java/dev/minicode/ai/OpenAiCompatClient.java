@@ -73,7 +73,12 @@ public class OpenAiCompatClient implements LlmClient {
             boolean retryable = code == 500 || code == 502 || code == 503 || code == 429;
             if (!retryable || attempt == maxAttempts) break;
             // 轻量退避
-            try { Thread.sleep(1000L * attempt); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+            try {
+                Thread.sleep(1000L * attempt);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                break;
+            }
         }
 
         assert resp != null;
@@ -99,7 +104,7 @@ public class OpenAiCompatClient implements LlmClient {
         if (status == 500 && lower.contains("internal server error")) {
             if (model.id().contains("muse-spark")) {
                 return "\n\n[提示] 模型 " + model.id() + " 在网关侧暂时不可用（500 Internal server error），非 mini-code 代码问题。" +
-                       "\n建议：1) 稍后重试  2) 切回可用模型：LLM_MODEL=kimi-k2.6  3) 或用 .env 设 LLM_MODEL=kimi-k2.6";
+                        "\n建议：1) 稍后重试  2) 切回可用模型：LLM_MODEL=kimi-k2.6  3) 或用 .env 设 LLM_MODEL=kimi-k2.6";
             }
             return "\n\n[提示] 网关 500，通常为模型侧临时故障，稍后重试或切换模型。";
         }

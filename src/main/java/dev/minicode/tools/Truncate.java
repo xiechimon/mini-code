@@ -9,20 +9,7 @@ import java.util.Arrays;
  */
 public final class Truncate {
 
-    private Truncate() {}
-
-    public static class Result {
-        public final boolean truncated;
-        public final String text;
-        public final int originalBytes;
-        public final int truncatedBytes;
-
-        Result(boolean truncated, String text, int originalBytes, int truncatedBytes) {
-            this.truncated = truncated;
-            this.text = text;
-            this.originalBytes = originalBytes;
-            this.truncatedBytes = truncatedBytes;
-        }
+    private Truncate() {
     }
 
     /**
@@ -76,7 +63,9 @@ public final class Truncate {
         return s;
     }
 
-    /** 计算字节数组中最后一个完整 UTF-8 字符边界 */
+    /**
+     * 计算字节数组中最后一个完整 UTF-8 字符边界
+     */
     static int validUtf8Length(byte[] bytes) {
         int len = bytes.length;
         if (len == 0) return 0;
@@ -94,7 +83,9 @@ public final class Truncate {
         return actual == expected ? len : i;
     }
 
-    /** 跳过尾部截断后开头的残缺多字节字符 */
+    /**
+     * 跳过尾部截断后开头的残缺多字节字符
+     */
     static int skipBrokenUtf8Head(byte[] bytes) {
         if (bytes.length == 0) return 0;
         // 从开头找第一个合法起始字节；跳过开头的续字节
@@ -112,5 +103,19 @@ public final class Truncate {
             if (bytes.length - i < expected) return bytes.length; // 残缺，全部跳过
         }
         return i;
+    }
+
+    public static class Result {
+        public final boolean truncated;
+        public final String text;
+        public final int originalBytes;
+        public final int truncatedBytes;
+
+        Result(boolean truncated, String text, int originalBytes, int truncatedBytes) {
+            this.truncated = truncated;
+            this.text = text;
+            this.originalBytes = originalBytes;
+            this.truncatedBytes = truncatedBytes;
+        }
     }
 }

@@ -106,7 +106,7 @@ public class BashTool implements ToolDefinition {
         int exit = proc.exitValue();
         String combined = "";
         if (out.length() > 0) combined += out.toString();
-        if (err.length() > 0) combined += (combined.isEmpty() ? "" : "\n[stderr]\n") + err.toString();
+        if (err.length() > 0) combined += (combined.isEmpty() ? "" : "\n[stderr]\n") + err;
         if (combined.isBlank()) combined = "(无输出)";
         String truncated = truncate(combined);
         String header = "$ " + command + "\n(退出码 " + exit + ")\n";
