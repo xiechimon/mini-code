@@ -50,25 +50,38 @@ public class OpenAiCompatClient implements LlmClient {
             return m;
         }
 
-        // 构造请求体并发送
+        // 构造请求体
         ObjectNode payload = buildPayload(model, context);
         String url = model.baseUrl().replaceAll("/$", "") + "/chat/completions";
         String body = MAPPER.writeValueAsString(payload);
 
-        HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .timeout(Duration.ofSeconds(120))
-                .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + apiKey)
-                .header("User-Agent", "mini-code/0.1")
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build();
+        // 带重试的发送：对 500/502/503/429 重试一次（对齐 pi 的 retryProviderRequest）
+        HttpResponse<String> resp = null;
+        int maxAttempts = 2;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(120))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + apiKey)
+                    .header("User-Agent", "mini-code/0.1")
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+            resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            int code = resp.statusCode();
+            // 500 系与 429 视为可重试
+            boolean retryable = code == 500 || code == 502 || code == 503 || code == 429;
+            if (!retryable || attempt == maxAttempts) break;
+            // 轻量退避
+            try { Thread.sleep(1000L * attempt); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+        }
 
-        HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+        assert resp != null;
         if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
+            String hint = buildErrorHint(resp.statusCode(), resp.body(), model);
             Message m = new Message();
             m.role = Message.Role.assistant;
-            m.content = List.of(Message.Content.text("[mini-code] 大模型请求失败 " + resp.statusCode() + ": " + truncate(resp.body(), 2000)));
+            m.content = List.of(Message.Content.text("[mini-code] 大模型请求失败 " + resp.statusCode() + ": " + truncate(resp.body(), 1500) + hint));
             m.stopReason = "error";
             m.errorMessage = resp.body();
             return m;
@@ -77,17 +90,41 @@ public class OpenAiCompatClient implements LlmClient {
         return parseResponse(resp.body());
     }
 
-    /** 按模型 provider 解析对应的 API Key */
+    /**
+     * 针对常见错误码给出可操作的中文提示。
+     * 500 对 muse-spark 等模型常为网关侧临时不可用，给出切回 kimi 的建议。
+     */
+    String buildErrorHint(int status, String body, Model model) {
+        String lower = body != null ? body.toLowerCase() : "";
+        if (status == 500 && lower.contains("internal server error")) {
+            if (model.id().contains("muse-spark")) {
+                return "\n\n[提示] 模型 " + model.id() + " 在网关侧暂时不可用（500 Internal server error），非 mini-code 代码问题。" +
+                       "\n建议：1) 稍后重试  2) 切回可用模型：LLM_MODEL=kimi-k2.6  3) 或用 .env 设 LLM_MODEL=kimi-k2.6";
+            }
+            return "\n\n[提示] 网关 500，通常为模型侧临时故障，稍后重试或切换模型。";
+        }
+        if (status == 401 || lower.contains("auth")) {
+            return "\n\n[提示] 鉴权失败，请检查 " + envVarFor(model.provider()) + " 是否正确。";
+        }
+        if (lower.contains("credits") || lower.contains("insufficient")) {
+            return "\n\n[提示] 余额不足，请到 https://opencode.ai/workspace 充值或切换到免费模型。";
+        }
+        if (lower.contains("not supported")) {
+            return "\n\n[提示] 模型 " + model.id() + " 不被当前 provider 支持，请检查 LLM_PROVIDER 与 LLM_MODEL 是否匹配（opencode-go 用 muse-spark-1.2-contributor，opencode 用 muse-spark-1.2-contributor-free）。";
+        }
+        return "";
+    }
+
+    /**
+     * 按模型 provider 解析对应的 API Key —— 复用 LlmConfig 的单一映射表，避免在两处维护 env var 名称
+     */
     private String resolveApiKey(Model model) {
         LlmConfig cfg = LlmConfig.resolve();
-        if (cfg.model.provider().equals(model.provider()) && cfg.apiKey != null) return cfg.apiKey;
+        if (cfg.model().provider().equals(model.provider()) && cfg.apiKey() != null) return cfg.apiKey();
         Map<String, String> env = System.getenv();
-        return switch (model.provider()) {
-            case "opencode", "opencode-go" -> firstNonNull(env.get("OPENCODE_API_KEY"), cfg.apiKey);
-            case "deepseek" -> env.get("DEEPSEEK_API_KEY");
-            case "openai" -> env.get("OPENAI_API_KEY");
-            default -> cfg.apiKey;
-        };
+        // 单一真实来源：LlmConfig.apiKeyForProvider
+        String direct = LlmConfig.apiKeyForProvider(model.provider(), env, null);
+        return direct != null ? direct : cfg.apiKey();
     }
 
     private String envVarFor(String provider) {
@@ -99,9 +136,9 @@ public class OpenAiCompatClient implements LlmClient {
         };
     }
 
-    private String firstNonNull(String a, String b) { return a != null ? a : b; }
-
-    /** 构造 OpenAI Chat Completions 请求体 */
+    /**
+     * 构造 OpenAI Chat Completions 请求体
+     */
     ObjectNode buildPayload(Model model, Context context) {
         ObjectNode root = MAPPER.createObjectNode();
         root.put("model", model.id());
@@ -195,7 +232,9 @@ public class OpenAiCompatClient implements LlmClient {
         return root;
     }
 
-    /** 解析 OpenAI 响应为 Message */
+    /**
+     * 解析 OpenAI 响应为 Message
+     */
     Message parseResponse(String json) throws Exception {
         JsonNode root = MAPPER.readTree(json);
         JsonNode choices = root.path("choices");
@@ -234,7 +273,8 @@ public class OpenAiCompatClient implements LlmClient {
                         else if (v.isBoolean()) args.put(e.getKey(), v.asBoolean());
                         else args.put(e.getKey(), v.toString());
                     });
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) {
+                }
                 Message.ToolCall call = new Message.ToolCall(id, name, args, argsJson);
                 contents.add(Message.Content.toolCall(call));
             }
