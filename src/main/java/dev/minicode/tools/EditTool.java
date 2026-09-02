@@ -8,7 +8,8 @@ import java.nio.file.Path;
 import java.util.Map;
 
 /**
- * Mirrors pi edit.ts — exact text replacement, oldText must be unique.
+ * 编辑文件工具，对应 pi 的 edit.ts
+ * 精确文本替换，oldText 必须在文件中唯一匹配。
  */
 public class EditTool implements ToolDefinition {
 
@@ -18,16 +19,16 @@ public class EditTool implements ToolDefinition {
     public EditTool(Path workdir) { this.workdir = workdir; }
 
     @Override public String name() { return "edit"; }
-    @Override public String description() { return "Edit a single file using exact text replacement. oldText must match exactly and be unique in the file."; }
+    @Override public String description() { return "精确文本替换编辑文件，oldText 必须在文件中唯一且完全匹配。"; }
     @Override public com.fasterxml.jackson.databind.JsonNode parameters() {
         ObjectNode schema = MAPPER.createObjectNode();
         schema.put("type","object");
         ObjectNode props = MAPPER.createObjectNode();
         for (String f : new String[]{"path","oldText","newText"}) {
             ObjectNode n = MAPPER.createObjectNode(); n.put("type","string");
-            if ("path".equals(f)) n.put("description","Path to the file to edit");
-            if ("oldText".equals(f)) n.put("description","Exact text to replace, must be unique");
-            if ("newText".equals(f)) n.put("description","Replacement text");
+            if ("path".equals(f)) n.put("description","要编辑的文件路径");
+            if ("oldText".equals(f)) n.put("description","要被替换的精确文本（必须唯一）");
+            if ("newText".equals(f)) n.put("description","替换后的文本");
             props.set(f, n);
         }
         schema.set("properties", props);
@@ -41,17 +42,17 @@ public class EditTool implements ToolDefinition {
         String pathStr = (String) args.get("path");
         String oldText = (String) args.get("oldText");
         String newText = (String) args.get("newText");
-        if (pathStr == null || oldText == null || newText == null) return ToolResult.error("missing required arguments path/oldText/newText");
+        if (pathStr == null || oldText == null || newText == null) return ToolResult.error("缺少必填参数 path/oldText/newText");
         Path file = resolve(pathStr);
-        if (!Files.exists(file)) return ToolResult.error("File not found: " + file);
+        if (!Files.exists(file)) return ToolResult.error("文件不存在: " + file);
         String content = Files.readString(file);
         int first = content.indexOf(oldText);
-        if (first < 0) return ToolResult.error("oldText not found in file");
+        if (first < 0) return ToolResult.error("未找到 oldText");
         int last = content.lastIndexOf(oldText);
-        if (first != last) return ToolResult.error("oldText is not unique in file (found multiple occurrences)");
+        if (first != last) return ToolResult.error("oldText 在文件中不唯一（找到多处匹配）");
         String updated = content.substring(0, first) + newText + content.substring(first + oldText.length());
         Files.writeString(file, updated);
-        return ToolResult.ok("Edited " + file + " (replaced 1 occurrence)");
+        return ToolResult.ok("已编辑 " + file + "（替换 1 处）");
     }
 
     private Path resolve(String p) {

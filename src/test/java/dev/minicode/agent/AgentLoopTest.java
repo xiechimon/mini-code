@@ -105,7 +105,7 @@ class AgentLoopTest {
         List<Message> out = loop.run(List.of(Message.user("hi")), null);
         // should have: user, assistant(length), toolResult(error), assistant(recovered)
         assertEquals(4, out.size());
-        assertTrue(out.get(2).text().contains("truncated") || out.get(2).content.get(0).isError || out.get(2).content.get(0).text.contains("truncated"));
+        assertTrue(out.get(2).text().contains("截断") || out.get(2).text().contains("truncated") || out.get(2).content.get(0).isError);
     }
 
     @Test

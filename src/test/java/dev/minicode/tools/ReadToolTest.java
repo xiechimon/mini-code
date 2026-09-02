@@ -49,6 +49,6 @@ class ReadToolTest {
         ReadTool tool = new ReadTool(tmp);
         ToolResult r = tool.execute("1", Map.of("path", "big.txt"));
         assertFalse(r.isError());
-        assertTrue(r.content().contains("truncated"));
+        assertTrue(r.content().contains("截断") || r.content().contains("truncated"));
     }
 }

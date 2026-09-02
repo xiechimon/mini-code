@@ -16,15 +16,15 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * OpenAI-compatible HTTP client (non-streaming MVP).
- * Maps Context -> OpenAI Chat Completions payload, parses assistant + tool_calls.
- * Mirrors pi-ai/src/api/openai-completions.ts (simplified, no streaming, no retry loop).
+ * OpenAI 兼容的 HTTP 客户端（MVP 非流式版本）。
+ * 负责把 Context 转为 OpenAI Chat Completions 请求，解析助手回复与工具调用。
+ * 对应 pi-ai/src/api/openai-completions.ts 的简化版（去掉了流式与重试）。
  */
 public class OpenAiCompatClient implements LlmClient {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private final HttpClient http;
-    private final String apiKeyOverride; // may be null -> resolve from LlmConfig
+    private final String apiKeyOverride; // 可为空，为空时从 LlmConfig 解析
 
     public OpenAiCompatClient() {
         this(null);
@@ -39,16 +39,18 @@ public class OpenAiCompatClient implements LlmClient {
 
     @Override
     public Message chat(Model model, Context context) throws Exception {
+        // 解析 API Key
         String apiKey = apiKeyOverride != null ? apiKeyOverride : resolveApiKey(model);
         if (apiKey == null || apiKey.isBlank()) {
             Message m = new Message();
             m.role = Message.Role.assistant;
-            m.content = List.of(Message.Content.text("[mini-code] missing API key for provider " + model.provider() + ". Set " + envVarFor(model.provider()) + " or OPENCODE_API_KEY"));
+            m.content = List.of(Message.Content.text("[mini-code] 缺少 provider " + model.provider() + " 的 API Key，请设置 " + envVarFor(model.provider()) + " 或 OPENCODE_API_KEY"));
             m.stopReason = "error";
-            m.errorMessage = "missing api key";
+            m.errorMessage = "缺少 API Key";
             return m;
         }
 
+        // 构造请求体并发送
         ObjectNode payload = buildPayload(model, context);
         String url = model.baseUrl().replaceAll("/$", "") + "/chat/completions";
         String body = MAPPER.writeValueAsString(payload);
@@ -66,7 +68,7 @@ public class OpenAiCompatClient implements LlmClient {
         if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
             Message m = new Message();
             m.role = Message.Role.assistant;
-            m.content = List.of(Message.Content.text("[mini-code] LLM error " + resp.statusCode() + ": " + truncate(resp.body(), 2000)));
+            m.content = List.of(Message.Content.text("[mini-code] 大模型请求失败 " + resp.statusCode() + ": " + truncate(resp.body(), 2000)));
             m.stopReason = "error";
             m.errorMessage = resp.body();
             return m;
@@ -75,9 +77,9 @@ public class OpenAiCompatClient implements LlmClient {
         return parseResponse(resp.body());
     }
 
+    /** 按模型 provider 解析对应的 API Key */
     private String resolveApiKey(Model model) {
         LlmConfig cfg = LlmConfig.resolve();
-        // if model matches resolved model, use its key, else try env
         if (cfg.model.provider().equals(model.provider()) && cfg.apiKey != null) return cfg.apiKey;
         Map<String, String> env = System.getenv();
         return switch (model.provider()) {
@@ -99,6 +101,7 @@ public class OpenAiCompatClient implements LlmClient {
 
     private String firstNonNull(String a, String b) { return a != null ? a : b; }
 
+    /** 构造 OpenAI Chat Completions 请求体 */
     ObjectNode buildPayload(Model model, Context context) {
         ObjectNode root = MAPPER.createObjectNode();
         root.put("model", model.id());
@@ -106,7 +109,7 @@ public class OpenAiCompatClient implements LlmClient {
 
         ArrayNode messages = MAPPER.createArrayNode();
 
-        // system
+        // 系统提示词
         if (context.systemPrompt != null && !context.systemPrompt.isBlank()) {
             ObjectNode sys = MAPPER.createObjectNode();
             sys.put("role", "system");
@@ -114,7 +117,7 @@ public class OpenAiCompatClient implements LlmClient {
             messages.add(sys);
         }
 
-        // history
+        // 历史消息
         for (Message m : context.messages) {
             switch (m.role) {
                 case user -> {
@@ -126,10 +129,9 @@ public class OpenAiCompatClient implements LlmClient {
                 case assistant -> {
                     ObjectNode o = MAPPER.createObjectNode();
                     o.put("role", "assistant");
-                    // if has toolCalls, emit tool_calls
                     List<Message.ToolCall> tcs = m.toolCalls();
                     if (!tcs.isEmpty()) {
-                        // content may be null when tool calls present (OpenAI style)
+                        // 有工具调用时，content 可能为空（OpenAI 规范）
                         String txt = m.text();
                         if (!txt.isBlank()) o.put("content", txt);
                         else o.putNull("content");
@@ -151,7 +153,7 @@ public class OpenAiCompatClient implements LlmClient {
                     messages.add(o);
                 }
                 case toolResult -> {
-                    // each toolResult message should be one entry with role=tool
+                    // 每条工具结果拆成一条 role=tool 的消息
                     for (Message.Content c : m.content) {
                         if ("toolResult".equals(c.type)) {
                             ObjectNode o = MAPPER.createObjectNode();
@@ -173,7 +175,7 @@ public class OpenAiCompatClient implements LlmClient {
 
         root.set("messages", messages);
 
-        // tools
+        // 工具定义
         if (context.tools != null && !context.tools.isEmpty()) {
             ArrayNode tools = MAPPER.createArrayNode();
             for (Tool t : context.tools) {
@@ -193,13 +195,14 @@ public class OpenAiCompatClient implements LlmClient {
         return root;
     }
 
+    /** 解析 OpenAI 响应为 Message */
     Message parseResponse(String json) throws Exception {
         JsonNode root = MAPPER.readTree(json);
         JsonNode choices = root.path("choices");
         if (!choices.isArray() || choices.isEmpty()) {
             Message m = new Message();
             m.role = Message.Role.assistant;
-            m.content = List.of(Message.Content.text("[mini-code] empty choices: " + truncate(json, 1000)));
+            m.content = List.of(Message.Content.text("[mini-code] 响应中无 choices: " + truncate(json, 1000)));
             m.stopReason = "error";
             return m;
         }

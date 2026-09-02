@@ -15,14 +15,15 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * Minimal agent loop, faithful to pi/packages/agent/src/agent-loop.ts
- * Simplified: single outer loop, no steering/followUp, sequential tool execution.
- * Emits AgentEvent via callback for observability (TUI will use it later).
+ * 最小 Agent 循环，忠实对齐 pi 的 packages/agent/src/agent-loop.ts。
+ * 简化版：单层循环，不含 steering/followUp，工具顺序执行。
+ * 通过 EventSink 对外发射事件，便于观测与后续 TUI 接入。
  */
 public class AgentLoop {
 
     private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
 
+    /** 事件回调 */
     public interface EventSink {
         void on(AgentEvent e);
     }
@@ -31,7 +32,7 @@ public class AgentLoop {
     private final Model model;
     private final String systemPrompt;
     private final List<ToolDefinition> tools;
-    private final int maxTurns;
+    private final int maxTurns; // 最大轮次，防止无限循环
 
     public AgentLoop(LlmClient llm, Model model, String systemPrompt, List<ToolDefinition> tools, int maxTurns) {
         this.llm = llm;
@@ -41,6 +42,12 @@ public class AgentLoop {
         this.maxTurns = maxTurns;
     }
 
+    /**
+     * 执行 Agent 循环
+     * @param initialPrompts 初始用户提示
+     * @param sink 事件接收器（可为空）
+     * @return 包含初始提示在内的全部消息
+     */
     public List<Message> run(List<Message> initialPrompts, EventSink sink) throws Exception {
         List<Message> contextMessages = new ArrayList<>(initialPrompts);
         List<Message> newMessages = new ArrayList<>(initialPrompts);
@@ -55,7 +62,7 @@ public class AgentLoop {
                     tools.stream().map(ToolDefinition::toLlmTool).collect(Collectors.toList()));
 
             Message assistant = llm.chat(model, ctx);
-            // normalize nulls
+            // 归一化空值
             if (assistant.content == null) assistant.content = List.of();
             if (assistant.stopReason == null) assistant.stopReason = "end";
 
@@ -63,6 +70,7 @@ public class AgentLoop {
             newMessages.add(assistant);
             if (sink != null) sink.on(new AgentEvent.MessageEnd(assistant));
 
+            // 遇到错误/中断直接结束
             if ("error".equals(assistant.stopReason) || "aborted".equals(assistant.stopReason)) {
                 if (sink != null) sink.on(new AgentEvent.TurnEnd(assistant, List.of()));
                 if (sink != null) sink.on(new AgentEvent.AgentEnd(newMessages));
@@ -71,16 +79,17 @@ public class AgentLoop {
 
             List<Message.ToolCall> toolCalls = assistant.toolCalls();
             if (toolCalls.isEmpty()) {
+                // 无工具调用，说明任务已完成
                 if (sink != null) sink.on(new AgentEvent.TurnEnd(assistant, List.of()));
                 if (sink != null) sink.on(new AgentEvent.AgentEnd(newMessages));
                 return newMessages;
             }
 
-            // length truncation — fail all tool calls (mirrors pi)
+            // 被截断（length）：全部工具调用视为失败，对齐 pi 的处理
             if ("length".equals(assistant.stopReason)) {
                 List<Message> results = new ArrayList<>();
                 for (Message.ToolCall tc : toolCalls) {
-                    String err = "Tool call truncated due to token limit (stopReason=length). Arguments may be incomplete.";
+                    String err = "工具调用因 token 超限被截断（stopReason=length），参数可能不完整。";
                     Message r = Message.toolResult(tc.id, err, true);
                     results.add(r);
                     contextMessages.add(r);
@@ -88,34 +97,29 @@ public class AgentLoop {
                     if (sink != null) sink.on(new AgentEvent.ToolResultEvent(tc, err, true));
                 }
                 if (sink != null) sink.on(new AgentEvent.TurnEnd(assistant, results));
-                // continue to let model see errors and recover
-                continue;
+                continue; // 让模型看到错误后重试
             }
 
-            // sequential execution (MVP) — parallel can be added in MVP2
+            // 顺序执行工具（MVP），MVP2 再加并行
             List<Message> toolResults = new ArrayList<>();
             for (Message.ToolCall tc : toolCalls) {
                 ToolDefinition def = findTool(tc.name);
                 String output;
                 boolean isError;
                 if (def == null) {
-                    output = "Unknown tool: " + tc.name;
+                    output = "未知工具: " + tc.name;
                     isError = true;
                 } else {
                     if (sink != null) sink.on(new AgentEvent.ToolStart(tc));
                     try {
                         Map<String, Object> args = tc.arguments != null ? tc.arguments : Map.of();
-                        // also try to parse argumentsJson if map empty but json present
-                        if (args.isEmpty() && tc.argumentsJson != null && !tc.argumentsJson.isBlank()) {
-                            // keep as-is, tool impl may expect stringified? we already parsed in client, so pass parsed
-                        }
                         ToolResult r = def.execute(tc.id, args);
                         output = r.content();
                         isError = r.isError();
                     } catch (Exception e) {
-                        output = "Tool execution failed: " + e.getMessage();
+                        output = "工具执行失败: " + e.getMessage();
                         isError = true;
-                        log.warn("tool {} failed", tc.name, e);
+                        log.warn("工具 {} 执行失败", tc.name, e);
                     }
                     if (sink != null) sink.on(new AgentEvent.ToolResultEvent(tc, output, isError));
                 }
@@ -126,7 +130,7 @@ public class AgentLoop {
             }
 
             if (sink != null) sink.on(new AgentEvent.TurnEnd(assistant, toolResults));
-            // loop continues for next turn with toolResults now in context
+            // 带上工具结果进入下一轮
         }
 
         if (sink != null) sink.on(new AgentEvent.AgentEnd(newMessages));
