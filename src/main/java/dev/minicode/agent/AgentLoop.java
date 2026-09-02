@@ -22,14 +22,6 @@ import java.util.stream.Collectors;
 public class AgentLoop {
 
     private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
-
-    /**
-     * 事件回调
-     */
-    public interface EventSink {
-        void on(AgentEvent e);
-    }
-
     private final LlmClient llm;
     private final Model model;
     private final String systemPrompt;
@@ -45,15 +37,24 @@ public class AgentLoop {
     }
 
     /**
-     * 执行 Agent 循环
-     *
-     * @param initialPrompts 初始用户提示
-     * @param sink           事件接收器（可为空）
-     * @return 包含初始提示在内的全部消息
+     * 执行 Agent 循环（无历史）
      */
     public List<Message> run(List<Message> initialPrompts, EventSink sink) throws Exception {
-        List<Message> contextMessages = new ArrayList<>(initialPrompts);
-        List<Message> newMessages = new ArrayList<>(initialPrompts);
+        return runWithHistory(List.of(), initialPrompts, sink);
+    }
+
+    /**
+     * 执行 Agent 循环（带历史，用于 REPL 多轮对话）
+     *
+     * @param history    历史消息（已完成的对话）
+     * @param newPrompts 本轮新提示
+     * @param sink       事件接收器
+     * @return 本轮产生的新消息（包含 newPrompts + 助手回复 + 工具结果）
+     */
+    public List<Message> runWithHistory(List<Message> history, List<Message> newPrompts, EventSink sink) throws Exception {
+        List<Message> contextMessages = new ArrayList<>(history);
+        contextMessages.addAll(newPrompts);
+        List<Message> newMessages = new ArrayList<>(newPrompts);
 
         if (sink != null) sink.on(new AgentEvent.AgentStart());
         int turn = 0;
@@ -143,5 +144,12 @@ public class AgentLoop {
     private ToolDefinition findTool(String name) {
         for (ToolDefinition t : tools) if (t.name().equals(name)) return t;
         return null;
+    }
+
+    /**
+     * 事件回调
+     */
+    public interface EventSink {
+        void on(AgentEvent e);
     }
 }

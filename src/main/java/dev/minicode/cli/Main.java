@@ -6,6 +6,7 @@ import dev.minicode.ai.*;
 import dev.minicode.tools.*;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -30,93 +31,106 @@ public class Main {
             System.out.println("  LLM_BASE_URL                  # 可选，自定义网关地址");
             System.out.println();
             System.out.println("提示: .env 文件会自动从当前目录向上查找到项目根目录");
-            System.out.println("提示: 无参直接运行会进入交互式，输入需求后回车即可");
+            System.out.println("提示: 无参直接运行会进入交互式 REPL，多轮对话直到输入 exit");
             System.exit(0);
         }
 
-        String prompt;
-        if (args.length == 0) {
-            // 无参交互式兜底：直接点 Run 也能用
-            System.out.println("[mini-code] 未传入参数，进入交互式（输入需求后回车，Ctrl+C 退出）");
-            System.out.print("> ");
-            System.out.flush();
-            java.util.Scanner scanner = new java.util.Scanner(System.in, java.nio.charset.StandardCharsets.UTF_8);
-            StringBuilder sb = new StringBuilder();
-            // 交互式：首行即提交；多行需求请用参数模式 mini-code "..."（避免在终端阻塞等待第二行）
-            if (scanner.hasNextLine()) {
-                String line = scanner.nextLine();
-                if (line != null) sb.append(line);
-            }
-            prompt = sb.toString().trim();
-            if (prompt.isBlank()) {
-                System.out.println("未输入需求，退出。提示：也可这样运行：java -jar mini-code.jar \"你的需求\"");
-                System.exit(0);
-                return;
-            }
-        } else {
-            prompt = String.join(" ", args);
-        }
         Path workdir = Path.of(System.getProperty("user.dir"));
 
-        // 解析大模型配置
+        // 有参：one-shot 模式，直接执行一次后退出
+        if (args.length > 0) {
+            String prompt = String.join(" ", args);
+            runOneTurn(prompt, workdir);
+            return;
+        }
+
+        // 无参：REPL 多轮对话模式（解决“第一轮后自动退出”）
+        System.out.println("[mini-code] 进入交互式 REPL（输入需求后回车，输入 exit/quit 退出）");
+        LlmConfig cfgRepl = LlmConfig.resolve();
+        if (cfgRepl.apiKey() == null) {
+            System.err.println("[mini-code] 警告: 未找到 API Key，请检查 .env 或环境变量");
+        } else {
+            System.out.println("[mini-code] provider=" + cfgRepl.model().provider() + " model=" + cfgRepl.model().id() + " baseUrl=" + cfgRepl.model().baseUrl());
+            System.out.println("[mini-code] 工作目录: " + workdir);
+        }
+        LlmClient llmRepl = new OpenAiCompatClient(cfgRepl.apiKey());
+        Model modelRepl = cfgRepl.model();
+        List<ToolDefinition> toolsRepl = List.of(new ReadTool(workdir), new WriteTool(workdir), new EditTool(workdir), new BashTool(workdir));
+        AgentLoop loopRepl = new AgentLoop(llmRepl, modelRepl, buildSystemPrompt(workdir), toolsRepl, 20);
+        java.util.Scanner scanner = new java.util.Scanner(System.in, java.nio.charset.StandardCharsets.UTF_8);
+        List<Message> history = new ArrayList<>();
+        while (true) {
+            System.out.print("\n> ");
+            System.out.flush();
+            if (!scanner.hasNextLine()) break;
+            String line = scanner.nextLine();
+            if (line == null) break;
+            String trimmed = line.trim();
+            if (trimmed.isEmpty()) continue;
+            if (trimmed.equalsIgnoreCase("exit") || trimmed.equalsIgnoreCase("quit") || trimmed.equalsIgnoreCase("/exit")) {
+                System.out.println("[mini-code] 再见");
+                break;
+            }
+            runReplTurn(line, history, loopRepl);
+        }
+    }
+
+    /** one-shot 执行一次 */
+    private static void runOneTurn(String prompt, Path workdir) throws Exception {
         LlmConfig cfg = LlmConfig.resolve();
         if (cfg.apiKey() == null) {
             System.err.println("[mini-code] 警告: 未找到 provider " + cfg.model().provider() + " 的 API Key，请设置 " + cfg.model().provider() + " 的 Key（例如 OPENCODE_API_KEY）");
         } else {
             System.out.println("[mini-code] provider=" + cfg.model().provider() + " model=" + cfg.model().id() + " baseUrl=" + cfg.model().baseUrl());
         }
-
         LlmClient llm = new OpenAiCompatClient(cfg.apiKey());
         Model model = cfg.model();
-
-        // 注册可用工具
-        List<ToolDefinition> tools = List.of(
-                new ReadTool(workdir),
-                new WriteTool(workdir),
-                new EditTool(workdir),
-                new BashTool(workdir)
-        );
-
-        String systemPrompt = buildSystemPrompt(workdir);
-
-        AgentLoop loop = new AgentLoop(llm, model, systemPrompt, tools, 20);
+        List<ToolDefinition> tools = List.of(new ReadTool(workdir), new WriteTool(workdir), new EditTool(workdir), new BashTool(workdir));
+        AgentLoop loop = new AgentLoop(llm, model, buildSystemPrompt(workdir), tools, 20);
         List<Message> prompts = List.of(Message.user(prompt));
-
         System.out.println("[mini-code] 需求: " + prompt);
         System.out.println("[mini-code] 工作目录: " + workdir);
         System.out.println("---");
-
-        List<Message> result = loop.run(prompts, e -> {
-            if (e instanceof AgentEvent.TurnStart t) {
-                System.out.println("\n[第 " + t.turn() + " 轮] 思考中...");
-            } else if (e instanceof AgentEvent.MessageEnd m) {
-                Message msg = m.message();
-                if (msg.role == Message.Role.assistant) {
-                    String txt = msg.text();
-                    if (!txt.isBlank()) System.out.println(txt);
-                    for (Message.ToolCall tc : msg.toolCalls()) {
-                        System.out.println("→ 调用工具: " + tc.name + " " + tc.argumentsJson);
-                    }
-                }
-            } else if (e instanceof AgentEvent.ToolResultEvent tr) {
-                System.out.println("← " + tr.toolCall().name + (tr.isError() ? " [失败]" : "") + ": " + truncate(tr.output(), 800));
-            } else if (e instanceof AgentEvent.AgentEnd ae) {
-                System.out.println("\n[mini-code] 完成（共 " + ae.messages().size() + " 条消息）");
-            }
+        List<Message> result = loop.run(prompts, Main::printEvent);
+        result.stream().filter(m -> m.role == Message.Role.assistant).reduce((a, b) -> b).ifPresent(m -> {
+            if ("error".equals(m.stopReason)) System.exit(2);
         });
-
-        // 若最后一条是错误，返回非零退出码
-        result.stream()
-                .filter(m -> m.role == Message.Role.assistant)
-                .reduce((a, b) -> b)
-                .ifPresent(m -> {
-                    if ("error".equals(m.stopReason)) System.exit(2);
-                });
     }
 
-    /**
-     * 构造系统提示词
-     */
+    /** REPL 单轮，带历史 */
+    private static void runReplTurn(String prompt, List<Message> history, AgentLoop loop) throws Exception {
+        System.out.println("[mini-code] 需求: " + prompt);
+        System.out.println("---");
+        List<Message> newPrompts = List.of(Message.user(prompt));
+        List<Message> turnResult = loop.runWithHistory(history, newPrompts, Main::printEvent);
+        history.addAll(turnResult);
+        // 保留历史长度控制：超过 50 条则裁剪早期（MVP 简化）
+        if (history.size() > 50) {
+            int toRemove = history.size() - 50;
+            history.subList(0, toRemove).clear();
+        }
+    }
+
+    private static void printEvent(AgentEvent e) {
+        if (e instanceof AgentEvent.TurnStart t) {
+            System.out.println("\n[第 " + t.turn() + " 轮] 思考中...");
+        } else if (e instanceof AgentEvent.MessageEnd m) {
+            Message msg = m.message();
+            if (msg.role == Message.Role.assistant) {
+                String txt = msg.text();
+                if (!txt.isBlank()) System.out.println(txt);
+                for (Message.ToolCall tc : msg.toolCalls()) {
+                    System.out.println("→ 调用工具: " + tc.name + " " + tc.argumentsJson);
+                }
+            }
+        } else if (e instanceof AgentEvent.ToolResultEvent tr) {
+            System.out.println("← " + tr.toolCall().name + (tr.isError() ? " [失败]" : "") + ": " + truncate(tr.output(), 800));
+        } else if (e instanceof AgentEvent.AgentEnd ae) {
+            System.out.println("\n[mini-code] 完成（共 " + ae.messages().size() + " 条消息）");
+        }
+    }
+
+    /** 构造系统提示词 */
     private static String buildSystemPrompt(Path workdir) {
         return """
                 你是 mini-code，一个用 Java 实现的极简 Claude Code 克隆。
