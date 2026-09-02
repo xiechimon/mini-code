@@ -1,5 +1,7 @@
 package dev.minicode.ai;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
@@ -9,17 +11,13 @@ import java.util.Map;
  * 从环境变量 + .env 文件 + opencode auth.json 解析 provider / model / baseUrl / apiKey。
  * 对应 pi-ai 的 env-api-keys.ts 与 provider baseUrl 逻辑。
  */
-public class LlmConfig {
+public record LlmConfig(Model model, String apiKey) {
 
-    public final Model model;
-    public final String apiKey;
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    public LlmConfig(Model model, String apiKey) {
-        this.model = model;
-        this.apiKey = apiKey;
-    }
-
-    /** 使用当前进程环境解析配置 */
+    /**
+     * 使用当前进程环境解析配置
+     */
     public static LlmConfig resolve() {
         // 合并策略：.env 文件（向上查找） + 系统环境变量（覆盖 .env，符合标准 dotenv 优先级）
         Map<String, String> merged = new HashMap<>(Dotenv.load());
@@ -37,7 +35,8 @@ public class LlmConfig {
         // 2) 按 provider 查找对应的环境变量（对齐 pi-ai env-api-keys.ts）
         if (apiKey == null) {
             apiKey = switch (provider) {
-                case "opencode", "opencode-go" -> firstNonNull(env.get("OPENCODE_API_KEY"), tryReadOpencodeAuth(provider));
+                case "opencode", "opencode-go" ->
+                        firstNonNull(env.get("OPENCODE_API_KEY"), tryReadOpencodeAuth(provider));
                 case "deepseek" -> env.get("DEEPSEEK_API_KEY");
                 case "openai" -> env.get("OPENAI_API_KEY");
                 case "anthropic" -> firstNonNull(env.get("ANTHROPIC_API_KEY"), env.get("ANTHROPIC_AUTH_TOKEN"));
@@ -67,7 +66,9 @@ public class LlmConfig {
         return new LlmConfig(model, apiKey);
     }
 
-    /** 各 provider 的默认模型 */
+    /**
+     * 各 provider 的默认模型
+     */
     private static String defaultModelFor(String provider) {
         return switch (provider) {
             case "opencode" -> "kimi-k2.6";
@@ -83,7 +84,24 @@ public class LlmConfig {
         return a != null ? a : b;
     }
 
-    /** 尝试从 opencode 的 auth.json 读取 key（兼容本机路径） */
+    /**
+     * 按 provider 查询对应的环境变量中的 API Key，供 OpenAiCompatClient 复用，避免两处维护同一张映射表
+     */
+    static String apiKeyForProvider(String provider, Map<String, String> env, String fallback) {
+        String key = switch (provider) {
+            case "opencode", "opencode-go" -> firstNonNull(env.get("OPENCODE_API_KEY"), fallback);
+            case "deepseek" -> env.get("DEEPSEEK_API_KEY");
+            case "openai" -> env.get("OPENAI_API_KEY");
+            case "anthropic" -> firstNonNull(env.get("ANTHROPIC_API_KEY"), env.get("ANTHROPIC_AUTH_TOKEN"));
+            case "minimax-cn" -> env.get("MINIMAX_CN_API_KEY");
+            default -> null;
+        };
+        return key != null ? key : fallback;
+    }
+
+    /**
+     * 尝试从 opencode 的 auth.json 读取 key（兼容本机路径）—— 使用 Jackson 解析，避免字符串 indexOf 的脆弱性
+     */
     private static String tryReadOpencodeAuth(String provider) {
         try {
             String home = System.getProperty("user.home");
@@ -91,27 +109,27 @@ public class LlmConfig {
             Path p2 = Path.of(home, ".config", "opencode", "auth.json");
             Path file = Files.exists(p1) ? p1 : Files.exists(p2) ? p2 : null;
             if (file == null) return null;
-            String json = Files.readString(file);
-            // 极简解析：查找 "provider": { ... "key": "sk-..." }
-            String key = extractJsonKey(json, provider);
-            if (key == null && !"opencode".equals(provider)) key = extractJsonKey(json, "opencode");
-            if (key == null) key = extractJsonKey(json, "opencode-go");
+            JsonNode root = MAPPER.readTree(Files.readString(file));
+            // 优先精确匹配 provider，其次回退到 opencode / opencode-go
+            String key = extractKeyFromNode(root, provider);
+            if (key == null && !"opencode".equals(provider)) key = extractKeyFromNode(root, "opencode");
+            if (key == null) key = extractKeyFromNode(root, "opencode-go");
             return key;
         } catch (Exception e) {
             return null;
         }
     }
 
-    /** 从 JSON 文本中抠出指定 provider 的 key */
-    private static String extractJsonKey(String json, String provider) {
-        int idx = json.indexOf("\"" + provider + "\"");
-        if (idx < 0) return null;
-        int keyIdx = json.indexOf("\"key\"", idx);
-        if (keyIdx < 0) return null;
-        int colon = json.indexOf(":", keyIdx);
-        int q1 = json.indexOf("\"", colon);
-        int q2 = json.indexOf("\"", q1 + 1);
-        if (q1 < 0 || q2 < 0) return null;
-        return json.substring(q1 + 1, q2);
+    private static String extractKeyFromNode(JsonNode root, String provider) {
+        JsonNode node = root.path(provider);
+        if (node.isMissingNode() || node.isNull()) return null;
+        // 兼容两种结构：{ "opencode-go": { "key": "sk-xxx" } } 或 { "opencode-go": "sk-xxx" }
+        if (node.isTextual()) return node.asText();
+        JsonNode keyNode = node.path("key");
+        if (keyNode.isTextual()) return keyNode.asText();
+        // 有些版本嵌套为 { "opencode-go": { "apiKey": "..." } }
+        JsonNode apiKeyNode = node.path("apiKey");
+        if (apiKeyNode.isTextual()) return apiKeyNode.asText();
+        return null;
     }
 }

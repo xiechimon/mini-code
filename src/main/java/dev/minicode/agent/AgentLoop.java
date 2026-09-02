@@ -23,7 +23,9 @@ public class AgentLoop {
 
     private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
 
-    /** 事件回调 */
+    /**
+     * 事件回调
+     */
     public interface EventSink {
         void on(AgentEvent e);
     }
@@ -44,8 +46,9 @@ public class AgentLoop {
 
     /**
      * 执行 Agent 循环
+     *
      * @param initialPrompts 初始用户提示
-     * @param sink 事件接收器（可为空）
+     * @param sink           事件接收器（可为空）
      * @return 包含初始提示在内的全部消息
      */
     public List<Message> run(List<Message> initialPrompts, EventSink sink) throws Exception {

@@ -22,13 +22,13 @@ public class Main {
             System.out.println("用法: mini-code \"<你的需求>\"");
             System.out.println("示例: mini-code \"帮我把 README.md 的标题改成 Hello mini-code\"");
             System.out.println("示例: mini-code \"读取 src/Main.java 并修复其中的空指针问题\"");
-            System.out.println("");
+            System.out.println();
             System.out.println("环境变量（可写在项目根目录 .env 文件中）：");
             System.out.println("  OPENCODE_API_KEY              # opencode/opencode-go 的 API Key（必填）");
             System.out.println("  LLM_PROVIDER=opencode-go      # 可选：opencode | opencode-go | deepseek | openai");
             System.out.println("  LLM_MODEL=kimi-k2.6           # 可选，默认 kimi-k2.6");
             System.out.println("  LLM_BASE_URL                  # 可选，自定义网关地址");
-            System.out.println("");
+            System.out.println();
             System.out.println("提示: .env 文件会自动从当前目录向上查找到项目根目录");
             System.out.println("提示: 无参直接运行会进入交互式，输入需求后回车即可");
             System.exit(0);
@@ -42,18 +42,10 @@ public class Main {
             System.out.flush();
             java.util.Scanner scanner = new java.util.Scanner(System.in, java.nio.charset.StandardCharsets.UTF_8);
             StringBuilder sb = new StringBuilder();
-            while (scanner.hasNextLine()) {
+            // 交互式：首行即提交；多行需求请用参数模式 mini-code "..."（避免在终端阻塞等待第二行）
+            if (scanner.hasNextLine()) {
                 String line = scanner.nextLine();
-                if (line == null) break;
-                // 空行结束（兼容多行粘贴，空行提交）
-                if (line.isBlank() && sb.length() > 0) break;
-                if (sb.length() > 0) sb.append("\n");
-                sb.append(line);
-                // 单行够用时直接跳出，等待模型执行；多行可空行结束
-                if (sb.length() > 0 && !scanner.hasNextLine()) break;
-                // 如果用户只输了一行且下一行还没输入，我们先尝试只读一行就执行（避免卡住）
-                // 简化：读到第一行非空就直接作为 prompt（多行需求可用参数方式传入）
-                break;
+                if (line != null) sb.append(line);
             }
             prompt = sb.toString().trim();
             if (prompt.isBlank()) {
@@ -68,14 +60,14 @@ public class Main {
 
         // 解析大模型配置
         LlmConfig cfg = LlmConfig.resolve();
-        if (cfg.apiKey == null) {
-            System.err.println("[mini-code] 警告: 未找到 provider " + cfg.model.provider() + " 的 API Key，请设置 " + cfg.model.provider() + " 的 Key（例如 OPENCODE_API_KEY）");
+        if (cfg.apiKey() == null) {
+            System.err.println("[mini-code] 警告: 未找到 provider " + cfg.model().provider() + " 的 API Key，请设置 " + cfg.model().provider() + " 的 Key（例如 OPENCODE_API_KEY）");
         } else {
-            System.out.println("[mini-code] provider=" + cfg.model.provider() + " model=" + cfg.model.id() + " baseUrl=" + cfg.model.baseUrl());
+            System.out.println("[mini-code] provider=" + cfg.model().provider() + " model=" + cfg.model().id() + " baseUrl=" + cfg.model().baseUrl());
         }
 
-        LlmClient llm = new OpenAiCompatClient(cfg.apiKey);
-        Model model = cfg.model;
+        LlmClient llm = new OpenAiCompatClient(cfg.apiKey());
+        Model model = cfg.model();
 
         // 注册可用工具
         List<ToolDefinition> tools = List.of(

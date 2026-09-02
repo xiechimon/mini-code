@@ -1,6 +1,7 @@
 package dev.minicode.ai;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+
 import java.util.List;
 import java.util.Map;
 
@@ -10,8 +11,10 @@ import java.util.Map;
  */
 public class Message {
 
-    /** 消息角色 */
-    public enum Role { user, assistant, toolResult, system }
+    /**
+     * 消息角色
+     */
+    public enum Role {user, assistant, toolResult, system}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class ToolCall {
@@ -22,13 +25,20 @@ public class Message {
         // 保留原始 JSON 字符串，用于回传给模型
         public String argumentsJson;
 
-        public ToolCall() {}
+        public ToolCall() {
+        }
+
         public ToolCall(String id, String name, Map<String, Object> arguments, String argumentsJson) {
-            this.id = id; this.name = name; this.arguments = arguments; this.argumentsJson = argumentsJson;
+            this.id = id;
+            this.name = name;
+            this.arguments = arguments;
+            this.argumentsJson = argumentsJson;
         }
     }
 
-    /** 内容块：文本 / 工具调用 / 工具结果 */
+    /**
+     * 内容块：文本 / 工具调用 / 工具结果
+     */
     public static class Content {
         public String type; // "text" | "toolCall" | "toolResult"
         public String text;
@@ -37,17 +47,36 @@ public class Message {
         public String toolCallId;
         public boolean isError;
 
-        /** 创建文本块 */
+        /**
+         * 创建文本块
+         */
         public static Content text(String t) {
-            Content c = new Content(); c.type = "text"; c.text = t; return c;
+            Content c = new Content();
+            c.type = "text";
+            c.text = t;
+            return c;
         }
-        /** 创建工具调用块 */
+
+        /**
+         * 创建工具调用块
+         */
         public static Content toolCall(ToolCall tc) {
-            Content c = new Content(); c.type = "toolCall"; c.toolCall = tc; return c;
+            Content c = new Content();
+            c.type = "toolCall";
+            c.toolCall = tc;
+            return c;
         }
-        /** 创建工具结果块 */
+
+        /**
+         * 创建工具结果块
+         */
         public static Content toolResult(String toolCallId, String text, boolean isError) {
-            Content c = new Content(); c.type = "toolResult"; c.toolCallId = toolCallId; c.text = text; c.isError = isError; return c;
+            Content c = new Content();
+            c.type = "toolResult";
+            c.toolCallId = toolCallId;
+            c.text = text;
+            c.isError = isError;
+            return c;
         }
     }
 
@@ -56,7 +85,8 @@ public class Message {
     public String stopReason;      // 结束原因："end" | "toolCalls" | "length" | "error" | "aborted"
     public String errorMessage;    // 错误信息（当 stopReason=error 时）
 
-    public Message() {}
+    public Message() {
+    }
 
     public Message(Role role, List<Content> content) {
         this.role = role;
@@ -65,37 +95,50 @@ public class Message {
 
     // ===== 快捷构造方法 =====
 
-    /** 用户消息 */
+    /**
+     * 用户消息
+     */
     public static Message user(String text) {
         return new Message(Role.user, List.of(Content.text(text)));
     }
 
-    /** 系统消息 */
+    /**
+     * 系统消息
+     */
     public static Message system(String text) {
         return new Message(Role.system, List.of(Content.text(text)));
     }
 
-    /** 助手消息 */
+    /**
+     * 助手消息
+     */
     public static Message assistant(List<Content> content, String stopReason) {
         Message m = new Message(Role.assistant, content);
         m.stopReason = stopReason;
         return m;
     }
 
-    /** 工具结果消息 */
+    /**
+     * 工具结果消息
+     */
     public static Message toolResult(String toolCallId, String text, boolean isError) {
         return new Message(Role.toolResult, List.of(Content.toolResult(toolCallId, text, isError)));
     }
 
-    /** 提取所有文本内容（包含工具结果的文本） */
+    /**
+     * 提取所有文本内容（包含工具结果的文本）
+     */
     public String text() {
         if (content == null) return "";
         StringBuilder sb = new StringBuilder();
-        for (Content c : content) if (("text".equals(c.type) || "toolResult".equals(c.type)) && c.text != null) sb.append(c.text);
+        for (Content c : content)
+            if (("text".equals(c.type) || "toolResult".equals(c.type)) && c.text != null) sb.append(c.text);
         return sb.toString();
     }
 
-    /** 提取所有工具调用 */
+    /**
+     * 提取所有工具调用
+     */
     public List<ToolCall> toolCalls() {
         if (content == null) return List.of();
         return content.stream()

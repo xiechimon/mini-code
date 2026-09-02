@@ -1,11 +1,9 @@
 package dev.minicode.agent;
 
-import dev.minicode.ai.*;
-import dev.minicode.tools.BashTool;
-import dev.minicode.tools.ReadTool;
-import dev.minicode.tools.ToolDefinition;
-import dev.minicode.tools.WriteTool;
-import dev.minicode.tools.EditTool;
+import dev.minicode.ai.LlmClient;
+import dev.minicode.ai.Message;
+import dev.minicode.ai.Model;
+import dev.minicode.tools.*;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -15,7 +13,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AgentLoopTest {
 
@@ -79,7 +78,7 @@ class AgentLoopTest {
         // user + assistant(read) + toolResult + assistant(edit) + toolResult + assistant(end) = 6
         assertEquals(6, out.size());
         assertEquals("hello java", Files.readString(f));
-        assertTrue(out.get(out.size()-1).text().contains("edited"));
+        assertTrue(out.get(out.size() - 1).text().contains("edited"));
     }
 
     @Test
@@ -116,12 +115,24 @@ class AgentLoopTest {
             int c = call.getAndIncrement();
             if (c == 0) {
                 Message.ToolCall tc = new Message.ToolCall("c1", "write", Map.of("path", "out.txt", "content", "hello"), "{\"path\":\"out.txt\",\"content\":\"hello\"}");
-                Message m = new Message(); m.role = Message.Role.assistant; m.content = List.of(Message.Content.toolCall(tc)); m.stopReason = "toolCalls"; return m;
+                Message m = new Message();
+                m.role = Message.Role.assistant;
+                m.content = List.of(Message.Content.toolCall(tc));
+                m.stopReason = "toolCalls";
+                return m;
             } else if (c == 1) {
                 Message.ToolCall tc = new Message.ToolCall("c2", "bash", Map.of("command", "cat out.txt"), "{\"command\":\"cat out.txt\"}");
-                Message m = new Message(); m.role = Message.Role.assistant; m.content = List.of(Message.Content.toolCall(tc)); m.stopReason = "toolCalls"; return m;
+                Message m = new Message();
+                m.role = Message.Role.assistant;
+                m.content = List.of(Message.Content.toolCall(tc));
+                m.stopReason = "toolCalls";
+                return m;
             } else {
-                Message m = new Message(); m.role = Message.Role.assistant; m.content = List.of(Message.Content.text("verified")); m.stopReason = "end"; return m;
+                Message m = new Message();
+                m.role = Message.Role.assistant;
+                m.content = List.of(Message.Content.text("verified"));
+                m.stopReason = "end";
+                return m;
             }
         };
         AgentLoop loop = new AgentLoop(fake, Model.opencodeGo("k"), "", tools, 10);

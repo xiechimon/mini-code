@@ -2,15 +2,19 @@
 
 > 学习 Claude Code / Pi 底层原理的复刻项目：每个功能先跑通 MVP，再持续优化。
 
-**对齐标的：** `earendil-works/pi` (TS, 100k stars) — pi 本身就是按「先 loop+工具跑通，再叠能力」做的，本项目用 Java 1:1 翻译其核心。
+**对齐标的：** `earendil-works/pi` (TS, 100k stars) — pi 本身就是按「先 loop+工具跑通，再叠能力」做的，本项目用 Java 1:1
+翻译其核心。
 
 ## 已完成 — MVP1
 
-- **Agent Loop** — `AgentLoop.java` 对齐 `pi/packages/agent/src/agent-loop.ts`：`prompt → LLM → tool_calls → execute → loop`，支持 `length` 截断全量失败、`error/aborted` 终止，顺序执行（并行留到 MVP2）
+- **Agent Loop** — `AgentLoop.java` 对齐 `pi/packages/agent/src/agent-loop.ts`：
+  `prompt → LLM → tool_calls → execute → loop`，支持 `length` 截断全量失败、`error/aborted` 终止，顺序执行（并行留到 MVP2）
 - **Tools 4件套** — `read / write / edit / bash`，协议与截断（2000行/50KB）对齐 pi
-- **LLM 接入** — `OpenAiCompatClient` 走 OpenAI-compat `/chat/completions`，`LlmConfig` 自动解析 `OPENCODE_API_KEY`（优先读 `~/.local/share/opencode/auth.json`，无 key 时返回 error message 而非抛异常，符合 StreamFn 契约）
+- **LLM 接入** — `OpenAiCompatClient` 走 OpenAI-compat `/chat/completions`，`LlmConfig` 自动解析 `OPENCODE_API_KEY`（优先读
+  `~/.local/share/opencode/auth.json`，无 key 时返回 error message 而非抛异常，符合 StreamFn 契约）
 - **CLI** — `dev.minicode.cli.Main`：`java -jar mini-code.jar "prompt"`，systemPrompt 含 workdir，事件打印
-- **验证** — 15 tests 绿 + 真实 LLM E2E：`opencode-go/kimi-k2.6` @ `https://opencode.ai/zen/go/v1` 完成 `read test.txt → write hello.txt` 三轮闭环
+- **验证** — 15 tests 绿 + 真实 LLM E2E：`opencode-go/kimi-k2.6` @ `https://opencode.ai/zen/go/v1` 完成
+  `read test.txt → write hello.txt` 三轮闭环
 
 ```
 [mini-code] provider=opencode-go model=kimi-k2.6 baseUrl=https://opencode.ai/zen/go/v1
@@ -52,6 +56,7 @@ dev.minicode.cli   — Main                                                     
 ## opencode 调研笔记
 
 - Server `opencode serve` 默认 `127.0.0.1:4096`，OpenAPI `/doc`，SDK `@opencode-ai/sdk`，但 LLM 本身不走本地 server
-- LLM 网关：`opencode` (Zen) `https://opencode.ai/zen/v1` / `opencode-go` `https://opencode.ai/zen/go/v1`，均用 `OPENCODE_API_KEY`，api 类型按模型分 `openai-completions`/`anthropic-messages` 等
+- LLM 网关：`opencode` (Zen) `https://opencode.ai/zen/v1` / `opencode-go` `https://opencode.ai/zen/go/v1`，均用 `
+  OPENCODE_API_KEY`，api 类型按模型分 `openai-completions`/`anthropic-messages` 等
 - 本地 1.18.20 已装，`auth.json` 含 `opencode-go` key，tui.json 权限 allow
 - mini-code 第一阶段直接调网关，不耦合本地 4096 server；后续可加 `OpenCodeServerClient` 实现同一 `LlmClient` 接口

@@ -10,4 +10,5 @@ public record Tool(
         String name,        // 工具名
         String description, // 工具描述
         JsonNode parameters // JSON Schema 参数定义
-) {}
+) {
+}

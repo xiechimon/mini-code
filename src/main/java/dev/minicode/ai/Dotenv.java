@@ -14,7 +14,8 @@ import java.util.Map;
  */
 public final class Dotenv {
 
-    private Dotenv() {}
+    private Dotenv() {
+    }
 
     /**
      * 从 user.dir 向上查找并加载 .env，未找到返回空 Map
@@ -86,13 +87,14 @@ public final class Dotenv {
                 char last = value.charAt(value.length() - 1);
                 if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
                     value = value.substring(1, value.length() - 1);
-                    // 双引号需处理转义
+                    // 双引号需处理转义：先将 \\ 转为占位，避免与 \n 等冲突
                     if (first == '"') {
+                        value = value.replace("\\\\", "\u0000");
                         value = value.replace("\\n", "\n")
-                                     .replace("\\r", "\r")
-                                     .replace("\\t", "\t")
-                                     .replace("\\\"", "\"")
-                                     .replace("\\\\", "\\");
+                                .replace("\\r", "\r")
+                                .replace("\\t", "\t")
+                                .replace("\\\"", "\"");
+                        value = value.replace("\u0000", "\\");
                     }
                 } else {
                     // 未加引号：截掉行内注释 " #"

@@ -14,25 +14,40 @@ import java.util.Map;
 public class EditTool implements ToolDefinition {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private final Path workdir;
+    private final Workspace workspace;
 
-    public EditTool(Path workdir) { this.workdir = workdir; }
+    public EditTool(Path workdir) {
+        this.workspace = new Workspace(workdir);
+    }
 
-    @Override public String name() { return "edit"; }
-    @Override public String description() { return "精确文本替换编辑文件，oldText 必须在文件中唯一且完全匹配。"; }
-    @Override public com.fasterxml.jackson.databind.JsonNode parameters() {
+    @Override
+    public String name() {
+        return "edit";
+    }
+
+    @Override
+    public String description() {
+        return "精确文本替换编辑文件，oldText 必须在文件中唯一且完全匹配。";
+    }
+
+    @Override
+    public com.fasterxml.jackson.databind.JsonNode parameters() {
         ObjectNode schema = MAPPER.createObjectNode();
-        schema.put("type","object");
+        schema.put("type", "object");
         ObjectNode props = MAPPER.createObjectNode();
-        for (String f : new String[]{"path","oldText","newText"}) {
-            ObjectNode n = MAPPER.createObjectNode(); n.put("type","string");
-            if ("path".equals(f)) n.put("description","要编辑的文件路径");
-            if ("oldText".equals(f)) n.put("description","要被替换的精确文本（必须唯一）");
-            if ("newText".equals(f)) n.put("description","替换后的文本");
+        for (String f : new String[]{"path", "oldText", "newText"}) {
+            ObjectNode n = MAPPER.createObjectNode();
+            n.put("type", "string");
+            if ("path".equals(f)) n.put("description", "要编辑的文件路径");
+            if ("oldText".equals(f)) n.put("description", "要被替换的精确文本（必须唯一）");
+            if ("newText".equals(f)) n.put("description", "替换后的文本");
             props.set(f, n);
         }
         schema.set("properties", props);
-        var req = MAPPER.createArrayNode(); req.add("path"); req.add("oldText"); req.add("newText");
+        var req = MAPPER.createArrayNode();
+        req.add("path");
+        req.add("oldText");
+        req.add("newText");
         schema.set("required", req);
         return schema;
     }
@@ -42,8 +57,14 @@ public class EditTool implements ToolDefinition {
         String pathStr = (String) args.get("path");
         String oldText = (String) args.get("oldText");
         String newText = (String) args.get("newText");
-        if (pathStr == null || oldText == null || newText == null) return ToolResult.error("缺少必填参数 path/oldText/newText");
-        Path file = resolve(pathStr);
+        if (pathStr == null || oldText == null || newText == null)
+            return ToolResult.error("缺少必填参数 path/oldText/newText");
+        Path file;
+        try {
+            file = workspace.resolve(pathStr);
+        } catch (IllegalArgumentException e) {
+            return ToolResult.error(e.getMessage());
+        }
         if (!Files.exists(file)) return ToolResult.error("文件不存在: " + file);
         String content = Files.readString(file);
         int first = content.indexOf(oldText);
@@ -56,8 +77,6 @@ public class EditTool implements ToolDefinition {
     }
 
     private Path resolve(String p) {
-        Path path = Path.of(p);
-        if (path.isAbsolute()) return path.normalize();
-        return workdir.resolve(p).normalize();
+        return workspace.resolve(p);
     }
 }

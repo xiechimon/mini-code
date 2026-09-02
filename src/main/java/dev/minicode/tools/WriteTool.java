@@ -14,22 +14,40 @@ import java.util.Map;
 public class WriteTool implements ToolDefinition {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private final Path workdir;
+    private final Workspace workspace;
 
-    public WriteTool(Path workdir) { this.workdir = workdir; }
+    public WriteTool(Path workdir) {
+        this.workspace = new Workspace(workdir);
+    }
 
-    @Override public String name() { return "write"; }
-    @Override public String description() { return "写入内容到文件。文件不存在则创建，存在则覆盖，自动创建父目录。"; }
-    @Override public com.fasterxml.jackson.databind.JsonNode parameters() {
+    @Override
+    public String name() {
+        return "write";
+    }
+
+    @Override
+    public String description() {
+        return "写入内容到文件。文件不存在则创建，存在则覆盖，自动创建父目录。";
+    }
+
+    @Override
+    public com.fasterxml.jackson.databind.JsonNode parameters() {
         ObjectNode schema = MAPPER.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = MAPPER.createObjectNode();
-        ObjectNode p = MAPPER.createObjectNode(); p.put("type","string"); p.put("description","要写入的文件路径");
+        ObjectNode p = MAPPER.createObjectNode();
+        p.put("type", "string");
+        p.put("description", "要写入的文件路径");
         props.set("path", p);
-        ObjectNode c = MAPPER.createObjectNode(); c.put("type","string"); c.put("description","要写入的文件内容");
+        ObjectNode c = MAPPER.createObjectNode();
+        c.put("type", "string");
+        c.put("description", "要写入的文件内容");
         props.set("content", c);
         schema.set("properties", props);
-        var req = MAPPER.createArrayNode(); req.add("path"); req.add("content"); schema.set("required", req);
+        var req = MAPPER.createArrayNode();
+        req.add("path");
+        req.add("content");
+        schema.set("required", req);
         return schema;
     }
 
@@ -39,15 +57,18 @@ public class WriteTool implements ToolDefinition {
         String content = (String) args.get("content");
         if (pathStr == null) return ToolResult.error("缺少 path");
         if (content == null) content = "";
-        Path file = resolve(pathStr);
-        Files.createDirectories(file.getParent() != null ? file.getParent() : workdir);
+        Path file;
+        try {
+            file = workspace.resolve(pathStr);
+        } catch (IllegalArgumentException e) {
+            return ToolResult.error(e.getMessage());
+        }
+        Files.createDirectories(file.getParent() != null ? file.getParent() : workspace.root());
         Files.writeString(file, content);
         return ToolResult.ok("已写入 " + content.length() + " 字符到 " + file);
     }
 
     private Path resolve(String p) {
-        Path path = Path.of(p);
-        if (path.isAbsolute()) return path.normalize();
-        return workdir.resolve(p).normalize();
+        return workspace.resolve(p);
     }
 }
