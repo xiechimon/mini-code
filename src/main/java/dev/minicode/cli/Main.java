@@ -57,25 +57,52 @@ public class Main {
         Model modelRepl = cfgRepl.model();
         List<ToolDefinition> toolsRepl = List.of(new ReadTool(workdir), new WriteTool(workdir), new EditTool(workdir), new BashTool(workdir));
         AgentLoop loopRepl = new AgentLoop(llmRepl, modelRepl, buildSystemPrompt(workdir), toolsRepl, 20);
-        java.util.Scanner scanner = new java.util.Scanner(System.in, java.nio.charset.StandardCharsets.UTF_8);
         List<Message> history = new ArrayList<>();
-        while (true) {
-            System.out.print("\n> ");
-            System.out.flush();
-            if (!scanner.hasNextLine()) break;
-            String line = scanner.nextLine();
-            if (line == null) break;
-            String trimmed = line.trim();
-            if (trimmed.isEmpty()) continue;
-            if (trimmed.equalsIgnoreCase("exit") || trimmed.equalsIgnoreCase("quit") || trimmed.equalsIgnoreCase("/exit")) {
-                System.out.println("[mini-code] 再见");
-                break;
+        // 区分管道 vs 交互式终端：System.console()==null 表示管道/重定向，此时一次性读完所有行后退出，避免 hasNextLine 阻塞
+        if (System.console() == null) {
+            // 管道模式：一次性读取 stdin 所有内容，按行处理
+            String piped;
+            try {
+                piped = new String(System.in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                piped = "";
             }
-            runReplTurn(line, history, loopRepl);
+            String[] lines = piped.split("\\R");
+            boolean didWork = false;
+            for (String line : lines) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty()) continue;
+                if (trimmed.equalsIgnoreCase("exit") || trimmed.equalsIgnoreCase("quit") || trimmed.equalsIgnoreCase("/exit"))
+                    break;
+                runReplTurn(line, history, loopRepl);
+                didWork = true;
+            }
+            if (!didWork) {
+                System.out.println("[mini-code] 未从管道读取到有效输入，退出。");
+            }
+        } else {
+            // 交互式终端：阻塞式 REPL
+            java.util.Scanner scanner = new java.util.Scanner(System.in, java.nio.charset.StandardCharsets.UTF_8);
+            while (true) {
+                System.out.print("\n> ");
+                System.out.flush();
+                if (!scanner.hasNextLine()) break;
+                String line = scanner.nextLine();
+                if (line == null) break;
+                String trimmed = line.trim();
+                if (trimmed.isEmpty()) continue;
+                if (trimmed.equalsIgnoreCase("exit") || trimmed.equalsIgnoreCase("quit") || trimmed.equalsIgnoreCase("/exit")) {
+                    System.out.println("[mini-code] 再见");
+                    break;
+                }
+                runReplTurn(line, history, loopRepl);
+            }
         }
     }
 
-    /** one-shot 执行一次 */
+    /**
+     * one-shot 执行一次
+     */
     private static void runOneTurn(String prompt, Path workdir) throws Exception {
         LlmConfig cfg = LlmConfig.resolve();
         if (cfg.apiKey() == null) {
@@ -97,7 +124,9 @@ public class Main {
         });
     }
 
-    /** REPL 单轮，带历史 */
+    /**
+     * REPL 单轮，带历史
+     */
     private static void runReplTurn(String prompt, List<Message> history, AgentLoop loop) throws Exception {
         System.out.println("[mini-code] 需求: " + prompt);
         System.out.println("---");
@@ -130,7 +159,9 @@ public class Main {
         }
     }
 
-    /** 构造系统提示词 */
+    /**
+     * 构造系统提示词
+     */
     private static String buildSystemPrompt(Path workdir) {
         return """
                 你是 mini-code，一个用 Java 实现的极简 Claude Code 克隆。
