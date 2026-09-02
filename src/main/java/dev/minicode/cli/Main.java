@@ -17,7 +17,8 @@ import java.util.List;
 public class Main {
 
     public static void main(String[] args) throws Exception {
-        if (args.length == 0 || "--help".equals(args[0]) || "-h".equals(args[0])) {
+        // 帮助信息
+        if (args.length == 1 && ("--help".equals(args[0]) || "-h".equals(args[0]))) {
             System.out.println("用法: mini-code \"<你的需求>\"");
             System.out.println("示例: mini-code \"帮我把 README.md 的标题改成 Hello mini-code\"");
             System.out.println("示例: mini-code \"读取 src/Main.java 并修复其中的空指针问题\"");
@@ -29,10 +30,40 @@ public class Main {
             System.out.println("  LLM_BASE_URL                  # 可选，自定义网关地址");
             System.out.println("");
             System.out.println("提示: .env 文件会自动从当前目录向上查找到项目根目录");
+            System.out.println("提示: 无参直接运行会进入交互式，输入需求后回车即可");
             System.exit(0);
         }
 
-        String prompt = String.join(" ", args);
+        String prompt;
+        if (args.length == 0) {
+            // 无参交互式兜底：直接点 Run 也能用
+            System.out.println("[mini-code] 未传入参数，进入交互式（输入需求后回车，Ctrl+C 退出）");
+            System.out.print("> ");
+            System.out.flush();
+            java.util.Scanner scanner = new java.util.Scanner(System.in, java.nio.charset.StandardCharsets.UTF_8);
+            StringBuilder sb = new StringBuilder();
+            while (scanner.hasNextLine()) {
+                String line = scanner.nextLine();
+                if (line == null) break;
+                // 空行结束（兼容多行粘贴，空行提交）
+                if (line.isBlank() && sb.length() > 0) break;
+                if (sb.length() > 0) sb.append("\n");
+                sb.append(line);
+                // 单行够用时直接跳出，等待模型执行；多行可空行结束
+                if (sb.length() > 0 && !scanner.hasNextLine()) break;
+                // 如果用户只输了一行且下一行还没输入，我们先尝试只读一行就执行（避免卡住）
+                // 简化：读到第一行非空就直接作为 prompt（多行需求可用参数方式传入）
+                break;
+            }
+            prompt = sb.toString().trim();
+            if (prompt.isBlank()) {
+                System.out.println("未输入需求，退出。提示：也可这样运行：java -jar mini-code.jar \"你的需求\"");
+                System.exit(0);
+                return;
+            }
+        } else {
+            prompt = String.join(" ", args);
+        }
         Path workdir = Path.of(System.getProperty("user.dir"));
 
         // 解析大模型配置
@@ -91,7 +122,9 @@ public class Main {
                 });
     }
 
-    /** 构造系统提示词 */
+    /**
+     * 构造系统提示词
+     */
     private static String buildSystemPrompt(Path workdir) {
         return """
                 你是 mini-code，一个用 Java 实现的极简 Claude Code 克隆。
