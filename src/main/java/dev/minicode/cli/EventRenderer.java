@@ -6,14 +6,17 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.minicode.agent.AgentEvent;
 import dev.minicode.ai.Message;
 
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Locale;
 import java.util.Map;
 
 /**
  * 事件渲染器：纯函数，输入 AgentEvent 与样式开关（必要时含耗时），输出待打印文本。
  * <p>
- * 本票（02）落地：工具调用摘要、四色角色、工具结果首行折叠与失败封顶。
- * 约束：不读环境、不碰时钟；耗时由调用方注入（完成行仍沿用旧文案，保持与 03 分离）。
+ * 职责：收敛原来散在 Main.printEvent 的轮首提示、助手文本、工具调用行、工具结果行、完成行渲染。
+ * 融合两票：02 的工具行摘要/折叠/失败封顶与四色 + 03 的横幅一行/四参 render/耗时格式化/推断辅助；完成行采用 03 的统计格式。
+ * 约束：不读环境、不碰时钟；耗时由调用方注入，工具次数由调用方基于事件流累计后注入。
  * </p>
  * 对应 spec：事件渲染面；输入为 agent 事件与样式对象，输出为文本；入口类只做组装。
  */
@@ -30,10 +33,42 @@ public final class EventRenderer {
     private static final String ANSI_GRAY = "\u001B[90m";   // 参数/辅助信息暗灰（bright black）
     private static final String ANSI_GREEN = "\u001B[32m";  // 成功绿
     private static final String ANSI_RED = "\u001B[31m";    // 失败红
+    /** ANSI：粗体（用于横幅名称） */
+    private static final String ANSI_BOLD = "\u001B[1m";
+    /** ANSI：暗灰（用于横幅其余部分，亮黑 90m，与 ANSI_GRAY 同值语义一致） */
+    private static final String ANSI_DIM = "\u001B[90m";
+    /** 分隔符 */
+    private static final String DOT = " · ";
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private EventRenderer() {
+    }
+
+    /**
+     * 横幅单行渲染：mini-code · provider/model · 工作目录
+     * <p>
+     * 有色模式：名称粗体、其余暗灰；去色模式：纯文本。
+     * 纯函数：不读环境，样式由调用方通过 Style 传入。
+     * </p>
+     *
+     * @param provider 提供方（如 opencode-go）
+     * @param modelId  模型名（如 kimi-k2.6）
+     * @param workdir  工作目录
+     * @param style    样式开关
+     * @return 单行横幅文本
+     */
+    public static String renderBanner(String provider, String modelId, Path workdir, Style style) {
+        if (style == null) style = Style.PLAIN;
+        String prov = provider != null ? provider : "unknown";
+        String mod = modelId != null ? modelId : "unknown";
+        String dir = workdir != null ? workdir.toString() : "";
+        String plain = "mini-code" + DOT + prov + "/" + mod + DOT + dir;
+        if (!style.colorEnabled()) {
+            return plain;
+        }
+        // 有色：名称粗体，其余暗灰
+        return ANSI_BOLD + "mini-code" + ANSI_RESET + ANSI_DIM + DOT + prov + "/" + mod + DOT + dir + ANSI_RESET;
     }
 
     /**
@@ -44,14 +79,14 @@ public final class EventRenderer {
      * @return 待打印文本，空字符串表示该事件无需输出（调用方应跳过打印）
      */
     public static String render(AgentEvent event, Style style) {
-        return render(event, style, null);
+        return render(event, style, null, -1, -1);
     }
 
     /**
      * 纯函数渲染入口（带耗时注入）。
      * <p>
-     * 本票完成行仍沿用“共 N 条消息”文案，保持等价；耗时参数为 03 的轮末统计预留，
-     * 当前忽略以满足行为保持，但已实现“耗时由调用方注入、不碰时钟”的纯函数形态。
+     * 本方法为兼容旧调用保留：未显式传入轮数/工具次数时，将从 AgentEnd 的 messages 推断。
+     * 新代码应优先使用 {@link #render(AgentEvent, Style, Duration, int, int)} 显式注入计数。
      * </p>
      *
      * @param event   事件
@@ -60,9 +95,27 @@ public final class EventRenderer {
      * @return 待打印文本，空字符串表示无需输出
      */
     public static String render(AgentEvent event, Style style, Duration elapsed) {
+        return render(event, style, elapsed, -1, -1);
+    }
+
+    /**
+     * 纯函数渲染入口（带耗时与计数注入）。
+     * <p>
+     * 轮末统计渲染为：N 轮 · M 次工具 · X.Xs，耗时格式化为一位小数秒。
+     * 渲染器不碰时钟，耗时必须由调用方计时后传入；工具次数由调用方基于事件流累计后传入。
+     * 若 turns/toolCalls 为负数则尝试从 AgentEnd 的消息列表推断，保证纯函数可测与兼容旧调用。
+     * </p>
+     *
+     * @param event     事件
+     * @param style     样式开关
+     * @param elapsed   本轮耗时（可为 null，视为 0）
+     * @param turns     轮数（-1 表示推断）
+     * @param toolCalls 工具次数（-1 表示推断）
+     * @return 待打印文本
+     */
+    public static String render(AgentEvent event, Style style, Duration elapsed, int turns, int toolCalls) {
         // 防御：style 可能为 null 时按去色处理（保持纯文本）
         if (style == null) style = Style.PLAIN;
-        // elapsed 仅为 03 预留，本票不使用，保持等价
 
         if (event instanceof AgentEvent.TurnStart t) {
             String text = "\n[第 " + t.turn() + " 轮] 思考中...";
@@ -97,8 +150,18 @@ public final class EventRenderer {
         } else if (event instanceof AgentEvent.ToolResultEvent tr) {
             return renderToolResult(tr, style);
         } else if (event instanceof AgentEvent.AgentEnd ae) {
-            // 03 横幅/轮末统计不动，保持旧文案与无色（与 03 分离）
-            return "\n[mini-code] 完成（共 " + ae.messages().size() + " 条消息）";
+            // 03：轮末统计 N 轮 · M 次工具 · X.Xs（耗时由入口注入，计数由事件流累计）
+            int effTurns = turns;
+            int effTools = toolCalls;
+            if (effTurns < 0) {
+                effTurns = inferTurns(ae);
+            }
+            if (effTools < 0) {
+                effTools = inferToolCalls(ae);
+            }
+            String elapsedStr = formatElapsed(elapsed);
+            String stats = effTurns + " 轮" + DOT + effTools + " 次工具" + DOT + elapsedStr;
+            return "\n" + stats;
         } else if (event instanceof AgentEvent.ToolStart) {
             return "";
         } else if (event instanceof AgentEvent.TurnEnd) {
@@ -135,16 +198,12 @@ public final class EventRenderer {
             }
             // 按通用换行符切分
             String[] parts = output.split("\\R");
-            // 空字符串的 split 行为特殊："" -> [""]，已在 isEmpty 分支处理；此处 parts 至少长度 1
             String firstLine = parts.length > 0 ? parts[0] : "";
             int totalLines = parts.length;
-            // 统计行数：用 split("\\R") 已丢弃末尾空行，视为可视行数；去色与有色保持一致
             if (totalLines > 1) {
                 String suffixPlain = " … 共 " + totalLines + " 行";
                 String firstColored = maybeColor(firstLine, ANSI_GREEN, style);
                 String suffixColored = maybeColor(suffixPlain, ANSI_GRAY, style);
-                // 去色时两者拼接即为 plain；有色时分别为绿与暗灰
-                // 注意：当去色时 maybeColor 返回原文本，拼接结果等于 plain 预期
                 if (!style.colorEnabled()) {
                     return prefix + firstLine + suffixPlain;
                 }
@@ -153,6 +212,33 @@ public final class EventRenderer {
                 return prefix + maybeColor(firstLine, ANSI_GREEN, style);
             }
         }
+    }
+
+    /**
+     * 耗时格式化为一位小数秒，如 1.5s、0.1s。
+     */
+    static String formatElapsed(Duration elapsed) {
+        if (elapsed == null) elapsed = Duration.ZERO;
+        double seconds = elapsed.toMillis() / 1000.0;
+        return String.format(Locale.ROOT, "%.1fs", seconds);
+    }
+
+    /**
+     * 从 AgentEnd 消息列表推断轮数（以 assistant 消息数为近似）。
+     */
+    private static int inferTurns(AgentEvent.AgentEnd ae) {
+        if (ae.messages() == null) return 0;
+        long c = ae.messages().stream().filter(m -> m.role == Message.Role.assistant).count();
+        return (int) c;
+    }
+
+    /**
+     * 从 AgentEnd 消息列表推断工具次数（以 toolResult 消息数为准）。
+     */
+    private static int inferToolCalls(AgentEvent.AgentEnd ae) {
+        if (ae.messages() == null) return 0;
+        long c = ae.messages().stream().filter(m -> m.role == Message.Role.toolResult).count();
+        return (int) c;
     }
 
     /**
@@ -169,17 +255,11 @@ public final class EventRenderer {
         if ("read".equals(name) || "write".equals(name) || "edit".equals(name)) {
             String path = extractStringField(tc, "path");
             if (path != null) return path;
-            // 缺 path 时视为空摘要（不倾倒 JSON，保持一行摘要的简洁）
             return "";
         } else if ("bash".equals(name)) {
             String cmd = extractStringField(tc, "command");
             if (cmd == null) {
-                // 回退：取紧凑 JSON 的 command 字段或整体
                 cmd = "";
-                if (tc.argumentsJson != null && !"null".equals(tc.argumentsJson)) {
-                    // 若 argumentsJson 非空但未能提取 command，尝试直接用其裁剪后的紧凑 JSON
-                    // 但 bash 场景更期望 command 文本，此处返回空或裁剪后 JSON 均可；选空以保持与 path 缺失一致
-                }
             }
             if (cmd == null) cmd = "";
             if (cmd.length() > PARAM_TRUNCATE) {
@@ -187,7 +267,6 @@ public final class EventRenderer {
             }
             return cmd;
         } else {
-            // 其他工具：紧凑 JSON 截 60
             String json = buildCompactJson(tc);
             if (json == null) json = "";
             json = json.trim();
@@ -231,7 +310,6 @@ public final class EventRenderer {
             }
         }
         if (tc.argumentsJson != null && !"null".equals(tc.argumentsJson)) {
-            // 尝试压缩：若为 JSON 文本则重序列化为紧凑形式，失败则原样返回
             String raw = tc.argumentsJson.trim();
             if (raw.isEmpty()) return "";
             try {

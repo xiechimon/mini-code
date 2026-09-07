@@ -4,6 +4,7 @@ import dev.minicode.agent.AgentEvent;
 import dev.minicode.ai.Message;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -11,10 +12,12 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * 事件渲染器单测：纯函数输出字符串断言，覆盖摘要规则、折叠规则、颜色角色与 60/500 边界。
+ * 事件渲染器单测：纯函数输出字符串断言，覆盖摘要规则、折叠规则、颜色角色与 60/500 边界及横幅/轮末统计。
  * <p>
- * 票 02 实现：工具调用摘要（read/write/edit→path、bash→command 截60、其他→紧凑JSON截60）、
- * 工具结果（成功首行+多行折叠「… 共 N 行」、失败全文封顶500）、四色角色（工具名青、参数暗灰、成功绿、失败红、轮首暗灰）及去色纯文本。
+ * 融合两票：02 的工具调用摘要（read/write/edit→path、bash→command 截60、其他→紧凑JSON截60）、
+ * 工具结果（成功首行+多行折叠「… 共 N 行」、失败全文封顶500）、四色角色（工具名青、参数暗灰、成功绿、失败红、轮首暗灰）
+ * + 03 的横幅一行（mini-code · provider/model · workdir）与轮末统计（N 轮 · M 次工具 · X.Xs，耗时注入）。
+ * 约束：渲染器不读环境、不碰时钟；耗时与计数由调用方注入。
  * </p>
  */
 class EventRendererTest {
@@ -289,25 +292,129 @@ class EventRendererTest {
         assertEquals(EventRenderer.render(fail, plain), strip(EventRenderer.render(fail, colored)));
     }
 
-    // —— 完成行（03 不动，保持等价） ——
+    // —— 横幅单行（03） ——
 
     @Test
-    void agentEndRenders() {
+    void bannerPlainRendersSingleLine() {
+        Path workdir = Path.of("/tmp/work");
+        String out = EventRenderer.renderBanner("opencode-go", "kimi-k2.6", workdir, plain);
+        assertEquals("mini-code · opencode-go/kimi-k2.6 · /tmp/work", out);
+        assertFalse(out.contains("\u001B["));
+        // 单行，无换行
+        assertFalse(out.contains("\n"));
+    }
+
+    @Test
+    void bannerColoredHasBoldAndDim() {
+        Path workdir = Path.of("/home/user/project");
+        String plainOut = EventRenderer.renderBanner("deepseek", "deepseek-chat", workdir, plain);
+        String coloredOut = EventRenderer.renderBanner("deepseek", "deepseek-chat", workdir, colored);
+        // 去色不含 ANSI，有色含 ANSI
+        assertFalse(plainOut.contains("\u001B["));
+        assertTrue(coloredOut.contains("\u001B["), "有色横幅应包含 ANSI");
+        // 剥离 ANSI 后与去色一致
+        String stripped = coloredOut.replaceAll("\u001B\\[[0-9;]*m", "");
+        assertEquals(plainOut, stripped);
+        // 名称粗体（1m），其余暗灰（90m 或 2m）
+        assertTrue(coloredOut.contains("\u001B[1m"), "名称应为粗体 1m");
+        assertTrue(coloredOut.contains("\u001B[90m") || coloredOut.contains("\u001B[2m"), "其余应为暗灰");
+        // 内容完整
+        assertTrue(stripped.contains("mini-code"));
+        assertTrue(stripped.contains("deepseek/deepseek-chat"));
+        assertTrue(stripped.contains("/home/user/project"));
+        assertTrue(stripped.contains(" · "));
+    }
+
+    @Test
+    void bannerColoredPlainStrippedEquality() {
+        Path workdir = Path.of("/tmp/a");
+        String p = EventRenderer.renderBanner("openai", "gpt-4o-mini", workdir, plain);
+        String c = EventRenderer.renderBanner("openai", "gpt-4o-mini", workdir, colored);
+        assertEquals(p, c.replaceAll("\u001B\\[[0-9;]*m", ""));
+    }
+
+    @Test
+    void bannerHandlesNullStyleAndNullFields() {
+        // null style 按去色处理
+        String out = EventRenderer.renderBanner(null, null, null, null);
+        assertFalse(out.contains("\u001B["));
+        assertTrue(out.contains("mini-code"));
+        assertTrue(out.contains("unknown/unknown"));
+    }
+
+    // —— 完成行（轮末统计，03 统计格式） ——
+
+    @Test
+    void agentEndRendersWithExplicitStats() {
+        // 空消息列表，显式注入轮数/工具次数/耗时
+        AgentEvent e = new AgentEvent.AgentEnd(List.of());
+        // 显式注入 3 轮 5 次工具 1.5s
+        String outPlain = EventRenderer.render(e, plain, Duration.ofMillis(1500), 3, 5);
+        assertEquals("\n3 轮 · 5 次工具 · 1.5s", outPlain);
+        assertFalse(outPlain.contains("\u001B["));
+        String outColored = EventRenderer.render(e, colored, Duration.ofMillis(1500), 3, 5);
+        // 有色与去色文案剥离后一致（本票统计行不额外着色，保持纯文本语义一致）
+        assertEquals(outPlain, outColored.replaceAll("\u001B\\[[0-9;]*m", ""));
+    }
+
+    @Test
+    void agentEndRendersWithInferenceWhenCountsNotSupplied() {
+        // 推断模式：未显式注入计数时，从 messages 推断
         List<Message> messages = List.of(Message.user("hi"), Message.assistant(List.of(Message.Content.text("ok")), "end"));
         AgentEvent e = new AgentEvent.AgentEnd(messages);
-        assertEquals("\n[mini-code] 完成（共 2 条消息）", EventRenderer.render(e, plain));
-        assertEquals("\n[mini-code] 完成（共 2 条消息）", strip(EventRenderer.render(e, colored)));
-        // 耗时注入当前不影响输出（为 03 预留）
-        assertEquals("\n[mini-code] 完成（共 2 条消息）", EventRenderer.render(e, plain, Duration.ofSeconds(2)));
-        assertEquals("\n[mini-code] 完成（共 2 条消息）", strip(EventRenderer.render(e, colored, Duration.ofMillis(500))));
-        // 去色无 ANSI
-        assertFalse(EventRenderer.render(e, plain).contains("\u001B["));
+        // 未注入计数，推断为 1 轮（1 个 assistant） 0 次工具
+        String out = EventRenderer.render(e, plain, Duration.ofSeconds(2));
+        assertEquals("\n1 轮 · 0 次工具 · 2.0s", out);
+        // 耗时注入生效
+        assertEquals("\n1 轮 · 0 次工具 · 0.5s", EventRenderer.render(e, plain, Duration.ofMillis(500)));
+        assertEquals("\n1 轮 · 0 次工具 · 0.5s", EventRenderer.render(e, colored, Duration.ofMillis(500)));
     }
 
     @Test
     void agentEndEmptyMessages() {
         AgentEvent e = new AgentEvent.AgentEnd(List.of());
-        assertEquals("\n[mini-code] 完成（共 0 条消息）", EventRenderer.render(e, plain));
+        assertEquals("\n0 轮 · 0 次工具 · 0.0s", EventRenderer.render(e, plain));
+        assertEquals("\n0 轮 · 0 次工具 · 0.0s", EventRenderer.render(e, plain, Duration.ZERO, 0, 0));
+        assertEquals("\n0 轮 · 0 次工具 · 0.0s", EventRenderer.render(e, plain, null, 0, 0));
+    }
+
+    @Test
+    void agentEndElapsedFormatting() {
+        AgentEvent e = new AgentEvent.AgentEnd(List.of());
+        assertEquals("\n1 轮 · 2 次工具 · 0.0s", EventRenderer.render(e, plain, Duration.ofMillis(0), 1, 2));
+        assertEquals("\n1 轮 · 2 次工具 · 0.1s", EventRenderer.render(e, plain, Duration.ofMillis(123), 1, 2));
+        assertEquals("\n1 轮 · 2 次工具 · 0.1s", EventRenderer.render(e, plain, Duration.ofMillis(50), 1, 2));
+        assertEquals("\n1 轮 · 2 次工具 · 1.5s", EventRenderer.render(e, plain, Duration.ofMillis(1499), 1, 2));
+        assertEquals("\n2 轮 · 10 次工具 · 12.3s", EventRenderer.render(e, plain, Duration.ofMillis(12345), 2, 10));
+        // null 耗时视为 0.0s
+        assertEquals("\n1 轮 · 1 次工具 · 0.0s", EventRenderer.render(e, plain, null, 1, 1));
+    }
+
+    @Test
+    void agentEndStatsPlainAndColoredStrippedEquality() {
+        AgentEvent e = new AgentEvent.AgentEnd(List.of(Message.user("hi")));
+        String p = EventRenderer.render(e, plain, Duration.ofMillis(1234), 2, 3);
+        String c = EventRenderer.render(e, colored, Duration.ofMillis(1234), 2, 3);
+        assertEquals(p, c.replaceAll("\u001B\\[[0-9;]*m", ""));
+        assertFalse(p.contains("\u001B["));
+    }
+
+    @Test
+    void agentEndInferToolCallsFromMessages() {
+        // 3 条 toolResult 消息，推断 3 次工具
+        List<Message> messages = List.of(
+                Message.user("hi"),
+                Message.assistant(List.of(Message.Content.text("ok")), "end"),
+                Message.toolResult("1", "a", false),
+                Message.toolResult("2", "b", false),
+                Message.toolResult("3", "c", true)
+        );
+        AgentEvent e = new AgentEvent.AgentEnd(messages);
+        // 不显式注入时，工具次数应从消息列表推断为 3
+        String out = EventRenderer.render(e, plain, Duration.ofMillis(800), -1, -1);
+        assertEquals("\n1 轮 · 3 次工具 · 0.8s", out);
+        // 显式注入覆盖推断
+        assertEquals("\n2 轮 · 9 次工具 · 0.8s", EventRenderer.render(e, plain, Duration.ofMillis(800), 2, 9));
     }
 
     // —— 忽略事件 ——
@@ -338,13 +445,21 @@ class EventRendererTest {
     void rendererDoesNotReadEnv() {
         Style s1 = Style.detect(Map.of("NO_COLOR", "1"), true);
         Style s2 = Style.detect(Map.of(), true);
+        // 02：工具摘要仅受 Style 影响
         Message.ToolCall tc = new Message.ToolCall("1", "read", Map.of("path", "a.txt"), "{\"path\":\"a.txt\"}");
         Message msg = Message.assistant(List.of(Message.Content.toolCall(tc)), "toolCalls");
         AgentEvent e = new AgentEvent.MessageEnd(msg);
-        // 去色与有色剥离后文本一致，证明渲染器仅受 Style 影响而非直接读环境；且纯函数确定性
         assertEquals(strip(EventRenderer.render(e, s1)), strip(EventRenderer.render(e, s2)));
         assertEquals("→ read a.txt", strip(EventRenderer.render(e, s1)));
         assertEquals("→ read a.txt", strip(EventRenderer.render(e, s2)));
+        // 03：横幅/轮首仅受 Style 影响，剥离后一致
+        AgentEvent turn = new AgentEvent.TurnStart(1);
+        assertEquals(strip(EventRenderer.render(turn, s1)), strip(EventRenderer.render(turn, s2)));
+        Path workdir = Path.of("/tmp/work");
+        String b1 = EventRenderer.renderBanner("opencode-go", "kimi-k2.6", workdir, s1);
+        String b2 = EventRenderer.renderBanner("opencode-go", "kimi-k2.6", workdir, s2);
+        assertFalse(b1.contains("\u001B["));
+        assertEquals(b1, b2.replaceAll("\u001B\\[[0-9;]*m", ""));
     }
 
     // —— 完整链路：去色纯文本、有色含角色色且剥离后一致 ——
@@ -365,5 +480,18 @@ class EventRendererTest {
         // 失败
         AgentEvent fail = new AgentEvent.ToolResultEvent(tc, "err", true);
         assertEquals(EventRenderer.render(fail, plain), strip(EventRenderer.render(fail, colored)));
+    }
+
+    @Test
+    void elapsedIsInjectedNotFromClock() {
+        AgentEvent e = new AgentEvent.AgentEnd(List.of());
+        // 相同输入不同 elapsed 应产生不同输出，证明耗时来自注入而非时钟
+        String a = EventRenderer.render(e, plain, Duration.ofMillis(100), 1, 1);
+        String b = EventRenderer.render(e, plain, Duration.ofMillis(900), 1, 1);
+        assertNotEquals(a, b);
+        assertEquals("\n1 轮 · 1 次工具 · 0.1s", a);
+        assertEquals("\n1 轮 · 1 次工具 · 0.9s", b);
+        // 多次相同注入结果确定
+        assertEquals(a, EventRenderer.render(e, plain, Duration.ofMillis(100), 1, 1));
     }
 }

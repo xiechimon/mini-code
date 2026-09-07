@@ -14,6 +14,7 @@ import org.jline.terminal.TerminalBuilder;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -55,11 +56,12 @@ public class Main {
         // 无参：REPL 多轮对话模式（解决“第一轮后自动退出”）
         System.out.println("[mini-code] 进入交互式 REPL（输入需求后回车，输入 exit/quit 退出）");
         LlmConfig cfgRepl = LlmConfig.resolve();
+        // 启动横幅一行：mini-code · provider/model · 工作目录（名称粗体、其余暗灰），去色时纯文本
+        Style bannerStyle = Style.detect(System.getenv(), System.console() != null);
+        String banner = EventRenderer.renderBanner(cfgRepl.model().provider(), cfgRepl.model().id(), workdir, bannerStyle);
+        System.out.println(banner);
         if (cfgRepl.apiKey() == null) {
             System.err.println("[mini-code] 警告: 未找到 API Key，请检查 .env 或环境变量");
-        } else {
-            System.out.println("[mini-code] provider=" + cfgRepl.model().provider() + " model=" + cfgRepl.model().id() + " baseUrl=" + cfgRepl.model().baseUrl());
-            System.out.println("[mini-code] 工作目录: " + workdir);
         }
         LlmClient llmRepl = new OpenAiCompatClient(cfgRepl.apiKey());
         Model modelRepl = cfgRepl.model();
@@ -179,30 +181,72 @@ public class Main {
      */
     private static void runOneTurn(String prompt, Path workdir) throws Exception {
         LlmConfig cfg = LlmConfig.resolve();
+        // 启动横幅一行：mini-code · provider/model · 工作目录（名称粗体、其余暗灰），无 key 警告保持走 stderr
+        Style bannerStyle = Style.detect(System.getenv(), System.console() != null);
+        String banner = EventRenderer.renderBanner(cfg.model().provider(), cfg.model().id(), workdir, bannerStyle);
+        System.out.println(banner);
         if (cfg.apiKey() == null) {
             System.err.println("[mini-code] 警告: 未找到 provider " + cfg.model().provider() + " 的 API Key，请设置 " + cfg.model().provider() + " 的 Key（例如 OPENCODE_API_KEY）");
-        } else {
-            System.out.println("[mini-code] provider=" + cfg.model().provider() + " model=" + cfg.model().id() + " baseUrl=" + cfg.model().baseUrl());
         }
         LlmClient llm = new OpenAiCompatClient(cfg.apiKey());
         Model model = cfg.model();
         List<ToolDefinition> tools = List.of(new ReadTool(workdir), new WriteTool(workdir), new EditTool(workdir), new BashTool(workdir));
         AgentLoop loop = new AgentLoop(llm, model, buildSystemPrompt(workdir), tools, 20);
         List<Message> prompts = List.of(Message.user(prompt));
-        System.out.println("[mini-code] 工作目录: " + workdir);
         System.out.println("---");
-        List<Message> result = loop.run(prompts, Main::printEvent);
+        // 轮末统计：耗时由入口计时后注入，工具次数由事件流累计，渲染器不碰时钟
+        long startNanos = System.nanoTime();
+        int[] turns = {0};
+        int[] toolCalls = {0};
+        Style renderStyle = bannerStyle;
+        AgentLoop.EventSink sink = e -> {
+            if (e instanceof AgentEvent.TurnStart) {
+                turns[0]++;
+            } else if (e instanceof AgentEvent.ToolResultEvent) {
+                toolCalls[0]++;
+            }
+            String rendered;
+            if (e instanceof AgentEvent.AgentEnd) {
+                Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
+                rendered = EventRenderer.render(e, renderStyle, elapsed, turns[0], toolCalls[0]);
+            } else {
+                rendered = EventRenderer.render(e, renderStyle);
+            }
+            if (rendered == null || rendered.isEmpty()) return;
+            System.out.println(rendered);
+        };
+        List<Message> result = loop.run(prompts, sink);
         result.stream().filter(m -> m.role == Message.Role.assistant).reduce((a, b) -> b).ifPresent(m -> {
             if ("error".equals(m.stopReason)) System.exit(2);
         });
     }
 
     /**
-     * REPL 单轮，带历史
+     * REPL 单轮，带历史（计时与事件流计数在此注入渲染器）
      */
     private static void runReplTurn(String prompt, List<Message> history, AgentLoop loop) throws Exception {
+        Style style = Style.detect(System.getenv(), System.console() != null);
+        long startNanos = System.nanoTime();
+        int[] turns = {0};
+        int[] toolCalls = {0};
+        AgentLoop.EventSink sink = e -> {
+            if (e instanceof AgentEvent.TurnStart) {
+                turns[0]++;
+            } else if (e instanceof AgentEvent.ToolResultEvent) {
+                toolCalls[0]++;
+            }
+            String rendered;
+            if (e instanceof AgentEvent.AgentEnd) {
+                Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
+                rendered = EventRenderer.render(e, style, elapsed, turns[0], toolCalls[0]);
+            } else {
+                rendered = EventRenderer.render(e, style);
+            }
+            if (rendered == null || rendered.isEmpty()) return;
+            System.out.println(rendered);
+        };
         List<Message> newPrompts = List.of(Message.user(prompt));
-        List<Message> turnResult = loop.runWithHistory(history, newPrompts, Main::printEvent);
+        List<Message> turnResult = loop.runWithHistory(history, newPrompts, sink);
         history.addAll(turnResult);
         // 保留历史长度控制：超过 50 条则裁剪早期（MVP 简化）
         if (history.size() > 50) {
@@ -228,6 +272,15 @@ public class Main {
      */
     static void printEvent(AgentEvent e, Style style) {
         String rendered = EventRenderer.render(e, style);
+        if (rendered == null || rendered.isEmpty()) return;
+        System.out.println(rendered);
+    }
+
+    /**
+     * 供单测使用的带耗时与计数注入入口（包可见，03 轮末统计）。
+     */
+    static void printEvent(AgentEvent e, Style style, Duration elapsed, int turns, int toolCalls) {
+        String rendered = EventRenderer.render(e, style, elapsed, turns, toolCalls);
         if (rendered == null || rendered.isEmpty()) return;
         System.out.println(rendered);
     }
