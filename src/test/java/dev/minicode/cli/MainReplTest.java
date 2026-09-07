@@ -5,10 +5,13 @@ import org.jline.reader.LineReaderBuilder;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.impl.ExternalTerminal;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -68,6 +71,45 @@ class MainReplTest {
                 new ByteArrayInputStream(input), output, StandardCharsets.UTF_8)) {
             LineReader reader = LineReaderBuilder.builder().terminal(terminal).build();
             assertEquals("你好 mini-code", reader.readLine(""));
+        }
+    }
+
+    /**
+     * 历史落盘单测：按规格 Testing Decisions，用 @TempDir 注入 history 路径——
+     * 先建 reader 写入一行输入触发 save()，再建新 reader（同路径）断言历史可翻到该行。
+     * 测试缝走 Main.createReader / ExternalTerminal dumb。
+     */
+    @Test
+    void historyPersistsAcrossReaders(@TempDir Path tmp) throws Exception {
+        Path hist = tmp.resolve("history");
+        // 首个 reader：输入一行触发历史添加与落盘
+        byte[] input = "hello persistent\n".getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream out1 = new ByteArrayOutputStream();
+        try (Terminal t1 = new ExternalTerminal("test-history-1", "dumb",
+                new ByteArrayInputStream(input), out1, StandardCharsets.UTF_8)) {
+            LineReader r1 = Main.createReader(t1, hist);
+            String line = r1.readLine("");
+            assertEquals("hello persistent", line);
+            // 显式 save 兜底，确保 @TempDir 路径下文件可见（runJLineRepl 同款逻辑）
+            r1.getHistory().save();
+            assertTrue(Files.exists(hist), "历史文件应已落盘");
+        }
+        // 新 reader 同路径应可翻到该行（history attach 后加载）
+        ByteArrayOutputStream out2 = new ByteArrayOutputStream();
+        try (Terminal t2 = new ExternalTerminal("test-history-2", "dumb",
+                new ByteArrayInputStream(new byte[0]), out2, StandardCharsets.UTF_8)) {
+            LineReader r2 = Main.createReader(t2, hist);
+            // history 在首次 readLine/attach 时加载；此处显式 attach 以触发 load
+            r2.getHistory().attach(r2);
+            boolean found = false;
+            for (var e : r2.getHistory()) {
+                if ("hello persistent".equals(e.line())) {
+                    found = true;
+                    break;
+                }
+            }
+            assertTrue(found, "新 reader 历史应可翻到上次输入");
+            assertEquals(1, r2.getHistory().size());
         }
     }
 }

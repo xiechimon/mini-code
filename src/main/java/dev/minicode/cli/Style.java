@@ -12,8 +12,36 @@ import java.util.Map;
  * 任一命中即去色，否则有色。
  * </p>
  * 纯数据对象，不读环境；探测由调用方注入 env 与 isTty。
+ * <p>
+ * 对齐 pi 源：pi-tui 渲染层样式探测与 provider-attribution 的 ANSI 角色色约定；
+ * 本类为 ANSI 常量唯一定义处，供 {@link EventRenderer} 与 {@link Main} 复用，避免两处重复定义。
+ * </p>
  */
 public record Style(boolean colorEnabled) {
+
+    // —— ANSI 常量唯一定义处（零依赖手写，供 EventRenderer/Main 复用） ——
+    /** ANSI：重置 */
+    public static final String ANSI_RESET = "\u001B[0m";
+    /** ANSI：工具名青 */
+    public static final String ANSI_CYAN = "\u001B[36m";
+    /** ANSI：参数/辅助信息暗灰（bright black） */
+    public static final String ANSI_GRAY = "\u001B[90m";
+    /** ANSI：成功绿 */
+    public static final String ANSI_GREEN = "\u001B[32m";
+    /** ANSI：失败红 */
+    public static final String ANSI_RED = "\u001B[31m";
+    /** ANSI：粗体（用于横幅名称） */
+    public static final String ANSI_BOLD = "\u001B[1m";
+    /** ANSI：暗灰（用于横幅其余部分，与 ANSI_GRAY 同值语义一致） */
+    public static final String ANSI_DIM = "\u001B[90m";
+    // 便捷别名（对应任务描述 Style.CYAN/RESET 等）
+    /** @see #ANSI_RESET */ public static final String RESET = ANSI_RESET;
+    /** @see #ANSI_CYAN */ public static final String CYAN = ANSI_CYAN;
+    /** @see #ANSI_GRAY */ public static final String GRAY = ANSI_GRAY;
+    /** @see #ANSI_GREEN */ public static final String GREEN = ANSI_GREEN;
+    /** @see #ANSI_RED */ public static final String RED = ANSI_RED;
+    /** @see #ANSI_BOLD */ public static final String BOLD = ANSI_BOLD;
+    /** @see #ANSI_DIM */ public static final String DIM = ANSI_DIM;
 
     /** 有色样式 */
     public static final Style COLOR = new Style(true);

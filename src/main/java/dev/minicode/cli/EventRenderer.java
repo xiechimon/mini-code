@@ -19,6 +19,11 @@ import java.util.Map;
  * 约束：不读环境、不碰时钟；耗时由调用方注入，工具次数由调用方基于事件流累计后注入。
  * </p>
  * 对应 spec：事件渲染面；输入为 agent 事件与样式对象，输出为文本；入口类只做组装。
+ * <p>
+ * 对齐 pi 源：pi-tui 渲染层（行式事件 → 终端文本的纯函数渲染）、
+ * 参考 pi/packages/tui/src/components/provider-attribution.ts 的四色角色与 provider/model 展示约定；
+ * ANSI 常量唯一定义见 {@link Style}。
+ * </p>
  */
 public final class EventRenderer {
 
@@ -27,16 +32,6 @@ public final class EventRenderer {
     /** 失败结果封顶长度 */
     private static final int FAILURE_TRUNCATE = 500;
 
-    // ANSI 角色色（零依赖手写）
-    private static final String ANSI_RESET = "\u001B[0m";
-    private static final String ANSI_CYAN = "\u001B[36m";   // 工具名青
-    private static final String ANSI_GRAY = "\u001B[90m";   // 参数/辅助信息暗灰（bright black）
-    private static final String ANSI_GREEN = "\u001B[32m";  // 成功绿
-    private static final String ANSI_RED = "\u001B[31m";    // 失败红
-    /** ANSI：粗体（用于横幅名称） */
-    private static final String ANSI_BOLD = "\u001B[1m";
-    /** ANSI：暗灰（用于横幅其余部分，亮黑 90m，与 ANSI_GRAY 同值语义一致） */
-    private static final String ANSI_DIM = "\u001B[90m";
     /** 分隔符 */
     private static final String DOT = " · ";
 
@@ -67,8 +62,8 @@ public final class EventRenderer {
         if (!style.colorEnabled()) {
             return plain;
         }
-        // 有色：名称粗体，其余暗灰
-        return ANSI_BOLD + "mini-code" + ANSI_RESET + ANSI_DIM + DOT + prov + "/" + mod + DOT + dir + ANSI_RESET;
+        // 有色：名称粗体，其余暗灰（ANSI 常量收敛至 Style）
+        return Style.ANSI_BOLD + "mini-code" + Style.ANSI_RESET + Style.ANSI_DIM + DOT + prov + "/" + mod + DOT + dir + Style.ANSI_RESET;
     }
 
     /**
@@ -79,14 +74,14 @@ public final class EventRenderer {
      * @return 待打印文本，空字符串表示该事件无需输出（调用方应跳过打印）
      */
     public static String render(AgentEvent event, Style style) {
-        return render(event, style, null, -1, -1);
+        return render(event, style, TurnStats.inferred(null));
     }
 
     /**
      * 纯函数渲染入口（带耗时注入）。
      * <p>
      * 本方法为兼容旧调用保留：未显式传入轮数/工具次数时，将从 AgentEnd 的 messages 推断。
-     * 新代码应优先使用 {@link #render(AgentEvent, Style, Duration, int, int)} 显式注入计数。
+     * 新代码应优先使用 {@link #render(AgentEvent, Style, TurnStats)} 显式注入计数。
      * </p>
      *
      * @param event   事件
@@ -95,11 +90,11 @@ public final class EventRenderer {
      * @return 待打印文本，空字符串表示无需输出
      */
     public static String render(AgentEvent event, Style style, Duration elapsed) {
-        return render(event, style, elapsed, -1, -1);
+        return render(event, style, TurnStats.inferred(elapsed));
     }
 
     /**
-     * 纯函数渲染入口（带耗时与计数注入）。
+     * 纯函数渲染入口（带耗时与计数注入，旧四参兼容）。
      * <p>
      * 轮末统计渲染为：N 轮 · M 次工具 · X.Xs，耗时格式化为一位小数秒。
      * 渲染器不碰时钟，耗时必须由调用方计时后传入；工具次数由调用方基于事件流累计后传入。
@@ -109,17 +104,35 @@ public final class EventRenderer {
      * @param event     事件
      * @param style     样式开关
      * @param elapsed   本轮耗时（可为 null，视为 0）
-     * @param turns     轮数（-1 表示推断）
-     * @param toolCalls 工具次数（-1 表示推断）
+     * @param turns     轮数（-1 表示推断，推荐改用 {@link TurnStats}）
+     * @param toolCalls 工具次数（-1 表示推断，推荐改用 {@link TurnStats}）
      * @return 待打印文本
      */
     public static String render(AgentEvent event, Style style, Duration elapsed, int turns, int toolCalls) {
-        // 防御：style 可能为 null 时按去色处理（保持纯文本）
+        return render(event, style, new TurnStats(elapsed, turns, toolCalls));
+    }
+
+    /**
+     * 纯函数渲染入口（收敛 Data Clumps：耗时与计数收拢为 {@link TurnStats}）。
+     * <p>
+     * 轮末统计渲染为：N 轮 · M 次工具 · X.Xs，其中「M 次工具」段用成功绿、其余（N 轮/耗时）用暗灰；
+     * 去色模式纯文本。耗时格式化为一位小数秒，渲染器不碰时钟，计数由事件流累计后注入。
+     * 若 {@link TurnStats#inferTurns()} / {@link TurnStats#inferTools()} 为真则从 AgentEnd 消息推断。
+     * </p>
+     *
+     * @param event 事件
+     * @param style 样式开关
+     * @param stats 轮末统计（可为 null，视为推断）
+     * @return 待打印文本
+     */
+    public static String render(AgentEvent event, Style style, TurnStats stats) {
+        // 防御：style 可能为 null 时按去色处理（保持纯文本）；stats 可能为 null 时按推断处理
         if (style == null) style = Style.PLAIN;
+        if (stats == null) stats = TurnStats.inferred(null);
 
         if (event instanceof AgentEvent.TurnStart t) {
             String text = "\n[第 " + t.turn() + " 轮] 思考中...";
-            return maybeColor(text, ANSI_GRAY, style);
+            return maybeColor(text, Style.ANSI_GRAY, style);
         } else if (event instanceof AgentEvent.MessageEnd m) {
             Message msg = m.message();
             if (msg.role != Message.Role.assistant) {
@@ -134,34 +147,37 @@ public final class EventRenderer {
             for (Message.ToolCall tc : msg.toolCalls()) {
                 if (sb.length() > 0) sb.append("\n");
                 String summary = summarize(tc);
-                // 工具名青、参数暗灰
-                String namePart = maybeColor(tc.name, ANSI_CYAN, style);
+                // 工具名青、参数暗灰（ANSI 常量收敛至 Style）
+                String namePart = maybeColor(tc.name, Style.ANSI_CYAN, style);
                 String line;
                 if (summary == null || summary.isEmpty()) {
                     line = "→ " + namePart;
                 } else {
-                    String paramPart = maybeColor(summary, ANSI_GRAY, style);
+                    String paramPart = maybeColor(summary, Style.ANSI_GRAY, style);
                     line = "→ " + namePart + " " + paramPart;
                 }
                 sb.append(line);
             }
-            if (sb.length() == 0) return "";
+            if (sb.isEmpty()) return "";
             return sb.toString();
         } else if (event instanceof AgentEvent.ToolResultEvent tr) {
             return renderToolResult(tr, style);
         } else if (event instanceof AgentEvent.AgentEnd ae) {
             // 03：轮末统计 N 轮 · M 次工具 · X.Xs（耗时由入口注入，计数由事件流累计）
-            int effTurns = turns;
-            int effTools = toolCalls;
-            if (effTurns < 0) {
-                effTurns = inferTurns(ae);
+            // 规格「成功/失败色也用于轮末统计的对应部分」：M 次工具段用成功绿，其余（N 轮/耗时）保持暗灰；去色纯文本
+            int effTurns = stats.inferTurns() ? inferTurns(ae) : stats.turns();
+            int effTools = stats.inferTools() ? inferToolCalls(ae) : stats.toolCalls();
+            String elapsedStr = formatElapsed(stats.elapsedOrZero());
+            if (!style.colorEnabled()) {
+                String plainStats = effTurns + " 轮" + DOT + effTools + " 次工具" + DOT + elapsedStr;
+                return "\n" + plainStats;
             }
-            if (effTools < 0) {
-                effTools = inferToolCalls(ae);
-            }
-            String elapsedStr = formatElapsed(elapsed);
-            String stats = effTurns + " 轮" + DOT + effTools + " 次工具" + DOT + elapsedStr;
-            return "\n" + stats;
+            // 有色：N 轮（暗灰）· M 次工具（绿）· 耗时（暗灰），分隔符随相邻段保持暗灰
+            String turnsPart = maybeColor(effTurns + " 轮", Style.ANSI_GRAY, style);
+            String toolsPart = maybeColor(effTools + " 次工具", Style.ANSI_GREEN, style);
+            String elapsedPart = maybeColor(elapsedStr, Style.ANSI_GRAY, style);
+            String dotGray = maybeColor(DOT, Style.ANSI_GRAY, style);
+            return "\n" + turnsPart + dotGray + toolsPart + dotGray + elapsedPart;
         } else if (event instanceof AgentEvent.ToolStart) {
             return "";
         } else if (event instanceof AgentEvent.TurnEnd) {
@@ -181,7 +197,7 @@ public final class EventRenderer {
      */
     private static String renderToolResult(AgentEvent.ToolResultEvent tr, Style style) {
         String toolName = tr.toolCall().name;
-        String toolNameColored = maybeColor(toolName, ANSI_CYAN, style);
+        String toolNameColored = maybeColor(toolName, Style.ANSI_CYAN, style);
         String prefix = "← " + toolNameColored + (tr.isError() ? " [失败]" : "") + ": ";
 
         String output = tr.output();
@@ -190,11 +206,11 @@ public final class EventRenderer {
         if (tr.isError()) {
             // 失败：全文封顶 500 字符，失败红
             String capped = output.length() <= FAILURE_TRUNCATE ? output : output.substring(0, FAILURE_TRUNCATE) + "...";
-            return prefix + maybeColor(capped, ANSI_RED, style);
+            return prefix + maybeColor(capped, Style.ANSI_RED, style);
         } else {
             // 成功：首行 + 多行折叠
             if (output.isEmpty()) {
-                return prefix + maybeColor("", ANSI_GREEN, style);
+                return prefix + maybeColor("", Style.ANSI_GREEN, style);
             }
             // 按通用换行符切分
             String[] parts = output.split("\\R");
@@ -202,14 +218,14 @@ public final class EventRenderer {
             int totalLines = parts.length;
             if (totalLines > 1) {
                 String suffixPlain = " … 共 " + totalLines + " 行";
-                String firstColored = maybeColor(firstLine, ANSI_GREEN, style);
-                String suffixColored = maybeColor(suffixPlain, ANSI_GRAY, style);
+                String firstColored = maybeColor(firstLine, Style.ANSI_GREEN, style);
+                String suffixColored = maybeColor(suffixPlain, Style.ANSI_GRAY, style);
                 if (!style.colorEnabled()) {
                     return prefix + firstLine + suffixPlain;
                 }
                 return prefix + firstColored + suffixColored;
             } else {
-                return prefix + maybeColor(firstLine, ANSI_GREEN, style);
+                return prefix + maybeColor(firstLine, Style.ANSI_GREEN, style);
             }
         }
     }
@@ -327,6 +343,6 @@ public final class EventRenderer {
      */
     static String maybeColor(String text, String ansiCode, Style style) {
         if (!style.colorEnabled() || ansiCode == null) return text;
-        return ansiCode + text + ANSI_RESET;
+        return ansiCode + text + Style.ANSI_RESET;
     }
 }

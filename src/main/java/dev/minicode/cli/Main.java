@@ -33,10 +33,6 @@ import java.util.Map;
  */
 public class Main {
 
-    /** 青色 ANSI，供 ❯ 提示符有色模式使用（与 Style 探测联动） */
-    private static final String ANSI_CYAN = "\u001B[36m";
-    /** 重置 ANSI */
-    private static final String ANSI_RESET = "\u001B[0m";
     /** 提示符字符 */
     private static final String PROMPT_CHAR = "❯";
 
@@ -138,7 +134,7 @@ public class Main {
      * 生成提示符：有色模式下青色，否则纯文本。
      * <p>
      * 与 {@link Style} 探测联动：{@code Style.detect(env, isTty)} 决定是否着色。
-     * 复用 {@link Style#colorEnabled()}，零新依赖，手写 ANSI。
+     * 复用 {@link Style#colorEnabled()}，零新依赖，手写 ANSI（ANSI 常量收敛至 {@link Style}）。
      * </p>
      *
      * @param style 样式开关（null 时按去色处理）
@@ -146,7 +142,7 @@ public class Main {
      */
     static String prompt(Style style) {
         if (style != null && style.colorEnabled()) {
-            return ANSI_CYAN + PROMPT_CHAR + ANSI_RESET + " ";
+            return Style.ANSI_CYAN + PROMPT_CHAR + Style.ANSI_RESET + " ";
         }
         return PROMPT_CHAR + " ";
     }
@@ -186,7 +182,14 @@ public class Main {
                 .option(LineReader.Option.HISTORY_INCREMENTAL, true)
                 .option(LineReader.Option.BRACKETED_PASTE, true);
         LineReader reader = builder.build();
-        // 兼容 dumb/ExternalTerminal 的括号粘贴：默认 dumb 不绑定 BEGIN_PASTE，需手动补上，否则粘贴多行会被拆成多次提交
+        // —— 护栏：为何反射 ——
+        // 背景：JLine 3.27.1 在 dumb/ExternalTerminal 下默认 keyMap 为 "dumb"，未绑定 BRACKETED_PASTE 的 begin 序列 "\u001B[200~"；
+        //       导致多行粘贴（bracketed paste）被拆成多次 readLine 提交，回退到逐行历史。
+        // 做法：通过反射取 LineReaderImpl.keyMaps 中的 "dumb" KeyMap，手动补绑定 "\u001B[200~" → "begin-paste"；
+        //       与 JLine 对 xterm/emacs 的 bindArrowKeys 逻辑保持一致，使 dumb 下粘贴也能整体进缓冲一次提交。
+        // 降级：反射失败（如 JLine 内部字段改名、安全管理器限制）时不抛异常——dumb 粘贴回退为逐行提交，
+        //       但不影响主流程（正常输入、历史持久化、反斜杠续行仍可用）；handleBracketedPasteFallback 兜底。
+        // 可逆性：JLine 后续若在 dumb 上默认支持 bracketed paste，本补丁变为 no-op，可安全移除。
         if (reader instanceof LineReaderImpl) {
             try {
                 java.lang.reflect.Field f = LineReaderImpl.class.getDeclaredField("keyMaps");
@@ -199,7 +202,7 @@ public class Main {
                     dumb.bind(new Reference("begin-paste"), "\u001B[200~");
                 }
             } catch (Exception ignored) {
-                // 反射失败时降级：dumb 下粘贴仍会被拆，但不影响主流程
+                // 反射失败降级：dumb 下粘贴仍会被拆成多次提交，但不影响主流程；外层有 handleBracketedPasteFallback 兜底
             }
         }
         return reader;
@@ -384,7 +387,7 @@ public class Main {
         AgentLoop loop = new AgentLoop(llm, model, buildSystemPrompt(workdir), tools, 20);
         List<Message> prompts = List.of(Message.user(prompt));
         System.out.println("---");
-        // 轮末统计：耗时由入口计时后注入，工具次数由事件流累计，渲染器不碰时钟
+        // 轮末统计：耗时由入口计时后注入，工具次数由事件流累计，渲染器不碰时钟（收敛为 TurnStats）
         long startNanos = System.nanoTime();
         int[] turns = {0};
         int[] toolCalls = {0};
@@ -398,7 +401,7 @@ public class Main {
             String rendered;
             if (e instanceof AgentEvent.AgentEnd) {
                 Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-                rendered = EventRenderer.render(e, renderStyle, elapsed, turns[0], toolCalls[0]);
+                rendered = EventRenderer.render(e, renderStyle, TurnStats.of(elapsed, turns[0], toolCalls[0]));
             } else {
                 rendered = EventRenderer.render(e, renderStyle);
             }
@@ -428,7 +431,7 @@ public class Main {
             String rendered;
             if (e instanceof AgentEvent.AgentEnd) {
                 Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-                rendered = EventRenderer.render(e, style, elapsed, turns[0], toolCalls[0]);
+                rendered = EventRenderer.render(e, style, TurnStats.of(elapsed, turns[0], toolCalls[0]));
             } else {
                 rendered = EventRenderer.render(e, style);
             }
@@ -467,10 +470,19 @@ public class Main {
     }
 
     /**
-     * 供单测使用的带耗时与计数注入入口（包可见，03 轮末统计）。
+     * 供单测使用的带耗时与计数注入入口（包可见，03 轮末统计——收敛为 TurnStats）。
      */
     static void printEvent(AgentEvent e, Style style, Duration elapsed, int turns, int toolCalls) {
-        String rendered = EventRenderer.render(e, style, elapsed, turns, toolCalls);
+        String rendered = EventRenderer.render(e, style, TurnStats.of(elapsed, turns, toolCalls));
+        if (rendered == null || rendered.isEmpty()) return;
+        System.out.println(rendered);
+    }
+
+    /**
+     * 供单测使用的 TurnStats 入口（包可见）。
+     */
+    static void printEvent(AgentEvent e, Style style, TurnStats stats) {
+        String rendered = EventRenderer.render(e, style, stats);
         if (rendered == null || rendered.isEmpty()) return;
         System.out.println(rendered);
     }

@@ -353,8 +353,11 @@ class EventRendererTest {
         assertEquals("\n3 轮 · 5 次工具 · 1.5s", outPlain);
         assertFalse(outPlain.contains("\u001B["));
         String outColored = EventRenderer.render(e, colored, Duration.ofMillis(1500), 3, 5);
-        // 有色与去色文案剥离后一致（本票统计行不额外着色，保持纯文本语义一致）
-        assertEquals(outPlain, outColored.replaceAll("\u001B\\[[0-9;]*m", ""));
+        // 去色纯文本，有色剥离后一致；规格「成功/失败色也用于轮末统计的对应部分」：M 次工具绿，其余暗灰
+        assertEquals(outPlain, strip(outColored));
+        assertTrue(outColored.contains(ANSI_GREEN), "M 次工具段应用成功绿");
+        assertTrue(outColored.contains(ANSI_GRAY), "N 轮/耗时段应为暗灰");
+        assertFalse(outPlain.contains("\u001B["));
     }
 
     @Test
@@ -367,7 +370,11 @@ class EventRendererTest {
         assertEquals("\n1 轮 · 0 次工具 · 2.0s", out);
         // 耗时注入生效
         assertEquals("\n1 轮 · 0 次工具 · 0.5s", EventRenderer.render(e, plain, Duration.ofMillis(500)));
-        assertEquals("\n1 轮 · 0 次工具 · 0.5s", EventRenderer.render(e, colored, Duration.ofMillis(500)));
+        String coloredOut = EventRenderer.render(e, colored, Duration.ofMillis(500));
+        assertEquals("\n1 轮 · 0 次工具 · 0.5s", strip(coloredOut));
+        assertTrue(coloredOut.contains(ANSI_GREEN), "推断模式有色也应含成功绿（工具段）");
+        assertTrue(coloredOut.contains(ANSI_GRAY), "推断模式有色应含暗灰（轮数/耗时）");
+        assertFalse(EventRenderer.render(e, plain, Duration.ofMillis(500)).contains("\u001B["));
     }
 
     @Test
@@ -395,8 +402,10 @@ class EventRendererTest {
         AgentEvent e = new AgentEvent.AgentEnd(List.of(Message.user("hi")));
         String p = EventRenderer.render(e, plain, Duration.ofMillis(1234), 2, 3);
         String c = EventRenderer.render(e, colored, Duration.ofMillis(1234), 2, 3);
-        assertEquals(p, c.replaceAll("\u001B\\[[0-9;]*m", ""));
+        assertEquals(p, strip(c));
         assertFalse(p.contains("\u001B["));
+        assertTrue(c.contains(ANSI_GREEN), "有色统计行 M 次工具应为绿");
+        assertTrue(c.contains(ANSI_GRAY), "有色统计行 N 轮/耗时应为暗灰");
     }
 
     @Test
@@ -493,5 +502,82 @@ class EventRendererTest {
         assertEquals("\n1 轮 · 1 次工具 · 0.9s", b);
         // 多次相同注入结果确定
         assertEquals(a, EventRenderer.render(e, plain, Duration.ofMillis(100), 1, 1));
+    }
+
+    // —— 规格缺口：轮末统计着色（成功绿用于 M 次工具，其余暗灰；去色纯文本） ——
+
+    @Test
+    void agentEndStatsColoredRoles() {
+        AgentEvent e = new AgentEvent.AgentEnd(List.of());
+        String plainOut = EventRenderer.render(e, plain, Duration.ofMillis(1500), 3, 5);
+        assertEquals("\n3 轮 · 5 次工具 · 1.5s", plainOut);
+        assertFalse(plainOut.contains("\u001B["), "去色模式纯文本");
+
+        String coloredOut = EventRenderer.render(e, colored, Duration.ofMillis(1500), 3, 5);
+        // 剥离后与去色一致
+        assertEquals(plainOut, strip(coloredOut));
+        // 角色色：M 次工具段绿，其余暗灰
+        assertTrue(coloredOut.contains(ANSI_GREEN), "M 次工具段应用成功绿");
+        assertTrue(coloredOut.contains(ANSI_GRAY), "N 轮/耗时段应为暗灰");
+        // 精细：绿应包裹 "5 次工具"，灰应包裹 "3 轮" 与 "1.5s"
+        assertTrue(coloredOut.contains(ANSI_GREEN + "5 次工具" + "\u001B[0m"), "绿应精确包裹工具段");
+        assertTrue(coloredOut.contains(ANSI_GRAY + "3 轮" + "\u001B[0m"), "暗灰应包裹轮数段");
+        assertTrue(coloredOut.contains(ANSI_GRAY + "1.5s" + "\u001B[0m"), "暗灰应包裹耗时段");
+        // 通过 TurnStats 同语义
+        String viaRecord = EventRenderer.render(e, colored, TurnStats.of(Duration.ofMillis(1500), 3, 5));
+        assertEquals(coloredOut, viaRecord);
+        String viaInferred = EventRenderer.render(e, plain, TurnStats.inferred(Duration.ofSeconds(2)));
+        // inferred 空消息时推断 0 轮 0 工具
+        assertEquals("\n0 轮 · 0 次工具 · 2.0s", viaInferred);
+    }
+
+    @Test
+    void agentEndStatsColoredViaTurnStatsInferredHasSameColors() {
+        List<Message> messages = List.of(Message.user("hi"), Message.assistant(List.of(Message.Content.text("ok")), "end"));
+        AgentEvent e = new AgentEvent.AgentEnd(messages);
+        String coloredInferred = EventRenderer.render(e, colored, TurnStats.inferred(Duration.ofMillis(500)));
+        assertEquals("\n1 轮 · 0 次工具 · 0.5s", strip(coloredInferred));
+        assertTrue(coloredInferred.contains(ANSI_GREEN));
+        assertTrue(coloredInferred.contains(ANSI_GRAY));
+    }
+
+    // —— Data Clumps 收敛：TurnStats 小 record ——
+
+    @Test
+    void turnStatsRecordReplacesFourArgs() {
+        AgentEvent e = new AgentEvent.AgentEnd(List.of());
+        // 旧四参重载与新 TurnStats 重载应一致
+        String viaFour = EventRenderer.render(e, colored, Duration.ofMillis(1234), 2, 3);
+        String viaRecord = EventRenderer.render(e, colored, TurnStats.of(Duration.ofMillis(1234), 2, 3));
+        assertEquals(viaFour, viaRecord);
+        assertEquals(strip(viaFour), strip(viaRecord));
+        // 纯文本一致
+        String plainFour = EventRenderer.render(e, plain, Duration.ofMillis(1234), 2, 3);
+        String plainRecord = EventRenderer.render(e, plain, TurnStats.of(Duration.ofMillis(1234), 2, 3));
+        assertEquals(plainFour, plainRecord);
+    }
+
+    @Test
+    void turnStatsFactoriesEncapsulateSentinel() {
+        TurnStats explicit = TurnStats.of(Duration.ofSeconds(1), 2, 3);
+        assertFalse(explicit.inferTurns());
+        assertFalse(explicit.inferTools());
+        assertEquals(2, explicit.turns());
+        assertEquals(3, explicit.toolCalls());
+
+        TurnStats inferred = TurnStats.inferred(Duration.ofSeconds(1));
+        assertTrue(inferred.inferTurns());
+        assertTrue(inferred.inferTools());
+        // elapsed 归一化
+        assertEquals("1.0s", EventRenderer.formatElapsed(inferred.elapsedOrZero()));
+        assertEquals("0.0s", EventRenderer.formatElapsed(TurnStats.inferred(null).elapsedOrZero()));
+    }
+
+    @Test
+    void turnStatsNullHandledAsInferred() {
+        AgentEvent e = new AgentEvent.AgentEnd(List.of());
+        String viaNull = EventRenderer.render(e, plain, (TurnStats) null);
+        String viaInferred = EventRenderer.render(e, plain, TurnStats.inferred(null));
+        assertEquals(viaInferred, viaNull);
     }
 }
