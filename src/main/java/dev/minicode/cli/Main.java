@@ -4,19 +4,26 @@ import dev.minicode.agent.AgentEvent;
 import dev.minicode.agent.AgentLoop;
 import dev.minicode.ai.*;
 import dev.minicode.tools.*;
+import org.jline.keymap.KeyMap;
+import org.jline.reader.Binding;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
+import org.jline.reader.Reference;
 import org.jline.reader.UserInterruptException;
+import org.jline.reader.impl.DefaultParser;
+import org.jline.reader.impl.LineReaderImpl;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 命令行入口，对应 pi-coding-agent 的 cli（极简版）。
@@ -25,6 +32,13 @@ import java.util.List;
  * 优先级：系统环境变量 > .env（从当前目录向上查找） > ~/.local/share/opencode/auth.json
  */
 public class Main {
+
+    /** 青色 ANSI，供 ❯ 提示符有色模式使用（与 Style 探测联动） */
+    private static final String ANSI_CYAN = "\u001B[36m";
+    /** 重置 ANSI */
+    private static final String ANSI_RESET = "\u001B[0m";
+    /** 提示符字符 */
+    private static final String PROMPT_CHAR = "❯";
 
     public static void main(String[] args) throws Exception {
         // 帮助信息
@@ -107,14 +121,129 @@ public class Main {
     }
 
     /**
+     * 默认历史文件路径：~/.mini-code/history
+     * <p>
+     * 供 JLine FileHistory 持久化使用，路径可注入（测试用 @TempDir）。
+     * </p>
+     */
+    static Path defaultHistoryPath() {
+        String home = System.getProperty("user.home");
+        if (home == null || home.isEmpty()) {
+            home = ".";
+        }
+        return Path.of(home, ".mini-code", "history");
+    }
+
+    /**
+     * 生成提示符：有色模式下青色，否则纯文本。
+     * <p>
+     * 与 {@link Style} 探测联动：{@code Style.detect(env, isTty)} 决定是否着色。
+     * 复用 {@link Style#colorEnabled()}，零新依赖，手写 ANSI。
+     * </p>
+     *
+     * @param style 样式开关（null 时按去色处理）
+     * @return 提示符字符串（含尾空格，供 readLine 直接使用）
+     */
+    static String prompt(Style style) {
+        if (style != null && style.colorEnabled()) {
+            return ANSI_CYAN + PROMPT_CHAR + ANSI_RESET + " ";
+        }
+        return PROMPT_CHAR + " ";
+    }
+
+    /**
+     * 创建带持久化历史与多行支持的 LineReader。
+     * <p>
+     * 配置要点：
+     * - 历史：FileHistory 路径可注入，默认 {@link #defaultHistoryPath()}；禁用时间戳以保持明文可读，增量落盘
+     * - 续行：行尾反斜杠通过 {@link DefaultParser#setEofOnEscapedNewLine(boolean)} 触发二次提示，JLine 自动拼接
+     * - 粘贴：括号粘贴天然支持（BRACKETED_PASTE），对 dumb/ExternalTerminal 额外补绑定以通过测试
+     * </p>
+     *
+     * @param terminal    终端
+     * @param historyPath 历史文件路径（可为 null 表示不持久化）
+     * @return 配置好的 LineReader
+     */
+    static LineReader createReader(Terminal terminal, Path historyPath) throws IOException {
+        if (historyPath != null) {
+            try {
+                Path parent = historyPath.toAbsolutePath().getParent();
+                if (parent != null) {
+                    Files.createDirectories(parent);
+                }
+            } catch (IOException ignored) {
+                // 忽略目录创建失败，后续 save 时会再次尝试
+            }
+        }
+        DefaultParser parser = new DefaultParser();
+        // 行尾反斜杠续行：解析器在行尾为转义字符时抛 EOFError，触发二次提示并拼接
+        parser.setEofOnEscapedNewLine(true);
+        LineReaderBuilder builder = LineReaderBuilder.builder()
+                .terminal(terminal)
+                .parser(parser)
+                .variable(LineReader.HISTORY_FILE, historyPath)
+                .option(LineReader.Option.HISTORY_TIMESTAMPED, false)
+                .option(LineReader.Option.HISTORY_INCREMENTAL, true)
+                .option(LineReader.Option.BRACKETED_PASTE, true);
+        LineReader reader = builder.build();
+        // 兼容 dumb/ExternalTerminal 的括号粘贴：默认 dumb 不绑定 BEGIN_PASTE，需手动补上，否则粘贴多行会被拆成多次提交
+        if (reader instanceof LineReaderImpl) {
+            try {
+                java.lang.reflect.Field f = LineReaderImpl.class.getDeclaredField("keyMaps");
+                f.setAccessible(true);
+                @SuppressWarnings("unchecked")
+                Map<String, KeyMap<Binding>> keyMaps = (Map<String, KeyMap<Binding>>) f.get(reader);
+                KeyMap<Binding> dumb = keyMaps.get("dumb");
+                if (dumb != null) {
+                    // 为 dumb 补上 begin-paste 绑定，与 emacs 的 bindArrowKeys 保持一致
+                    dumb.bind(new Reference("begin-paste"), "\u001B[200~");
+                }
+            } catch (Exception ignored) {
+                // 反射失败时降级：dumb 下粘贴仍会被拆，但不影响主流程
+            }
+        }
+        return reader;
+    }
+
+    /**
      * JLine 交互循环：支持方向键编辑与历史，Ctrl-C 放弃当前行，Ctrl-D 退出。
+     * <p>
+     * 使用 {@link #defaultHistoryPath()} 作为历史文件，提示符经 {@link #prompt(Style)} 着色。
+     * </p>
      */
     static void runJLineRepl(Terminal terminal, List<Message> history, AgentLoop loop) throws Exception {
-        LineReader reader = LineReaderBuilder.builder().terminal(terminal).build();
+        runJLineRepl(terminal, history, loop, defaultHistoryPath());
+    }
+
+    /**
+     * JLine 交互循环（历史路径可注入，供测试用 @TempDir）。
+     * <p>
+     * 保持 JLine readLine 语义：Ctrl-C 抛 UserInterruptException（弃行）、Ctrl-D 抛 EndOfFileException（退出）。
+     * 行尾反斜杠与括号粘贴由 LineReader/Parser 天然处理，拼接为一次提交。
+     * </p>
+     *
+     * @param terminal    终端
+     * @param history     对话历史（AgentLoop 上下文）
+     * @param loop        Agent 循环
+     * @param historyPath 历史文件路径（测试可注入临时目录）
+     */
+    static void runJLineRepl(Terminal terminal, List<Message> history, AgentLoop loop, Path historyPath) throws Exception {
+        // 样式探测供提示符着色：复用 Style.detect，与事件渲染同源
+        Style style = Style.detect(System.getenv(), true);
+        // 对 dumb 终端强制去色（TERM=dumb 场景），保持与事件渲染一致
+        // 若终端类型为 dumb，即使 env 未置 TERM，也应去色以免 ANSI 乱码
+        if (terminal != null && "dumb".equals(terminal.getType())) {
+            style = Style.PLAIN;
+        } else if (terminal != null && "dumb-color".equals(terminal.getType())) {
+            style = Style.PLAIN;
+        }
+        String promptStr = prompt(style);
+        LineReader reader = createReader(terminal, historyPath);
+        // JLine 历史在首次 readLine 时 attach 并加载，此后增量落盘
         while (true) {
             String line;
             try {
-                line = reader.readLine("\n> ");
+                line = reader.readLine(promptStr);
             } catch (UserInterruptException e) {
                 continue; // Ctrl-C：放弃当前行，继续下一轮
             } catch (EndOfFileException e) {
@@ -122,6 +251,12 @@ public class Main {
                 break;
             }
             if (line == null) break;
+            // 粘贴多行（dumb 兜底）：若 JLine 未处理括号粘贴标记（dumb 默认不绑定），此处手动剥离标记并拼接
+            // 正常 xterm 下 line 已为 "a\nb\nc" 且不含标记，此分支不触发
+            if (line.contains("\u001B[200~")) {
+                line = handleBracketedPasteFallback(line, reader, promptStr);
+                if (line == null) continue;
+            }
             String trimmed = line.trim();
             if (trimmed.isEmpty()) continue;
             if (isExitCommand(trimmed)) {
@@ -129,7 +264,59 @@ public class Main {
                 break;
             }
             runReplTurn(line, history, loop);
+            // 增量历史已自动落盘，此处显式 save 兜底，确保 @TempDir 测试中文件可见
+            try {
+                reader.getHistory().save();
+            } catch (IOException ignored) {
+            }
         }
+    }
+
+    /**
+     * dumb 终端的括号粘贴兜底：当首行含  ESC[200~ 时，持续读取直到 ESC[201~，拼接为一次提交。
+     * <p>
+     * 正常终端（xterm）下 JLine 已处理，此方法仅在 dumb 反射补丁未生效或未触发时兜底。
+     * </p>
+     */
+    static String handleBracketedPasteFallback(String firstLine, LineReader reader, String prompt) {
+        String begin = "\u001B[200~";
+        String end = "\u001B[201~";
+        int bIdx = firstLine.indexOf(begin);
+        if (bIdx < 0) return firstLine;
+        StringBuilder buf = new StringBuilder();
+        // 去掉起始标记
+        String afterBegin = firstLine.substring(bIdx + begin.length());
+        // 若首行已含结束标记，直接截断
+        int eIdx = afterBegin.indexOf(end);
+        if (eIdx >= 0) {
+            buf.append(afterBegin, 0, eIdx);
+            return buf.toString();
+        }
+        buf.append(afterBegin);
+        // 首行未含结束标记，需继续读取
+        // 若首行后无内容但有换行语义，补一个换行（粘贴多行场景）
+        // 若后继行通过 JLine 括号粘贴已合并，此处不会走到
+        while (true) {
+            String next;
+            try {
+                // 二次提示用空或同提示，保持简单
+                next = reader.readLine("");
+            } catch (UserInterruptException e) {
+                return null;
+            } catch (EndOfFileException e) {
+                break;
+            }
+            if (next == null) break;
+            int endIdx = next.indexOf(end);
+            if (endIdx >= 0) {
+                buf.append("\n").append(next, 0, endIdx);
+                break;
+            } else {
+                // 正常行，追加并补换行
+                buf.append("\n").append(next);
+            }
+        }
+        return buf.toString();
     }
 
     /**
@@ -137,8 +324,11 @@ public class Main {
      */
     static void runScannerRepl(List<Message> history, AgentLoop loop) throws Exception {
         java.util.Scanner scanner = new java.util.Scanner(System.in, StandardCharsets.UTF_8);
+        // 降级也使用 ❯ 提示符，保持一致
+        Style style = Style.detect(System.getenv(), true);
+        String promptStr = prompt(style);
         while (true) {
-            System.out.print("\n> ");
+            System.out.print(promptStr);
             System.out.flush();
             if (!scanner.hasNextLine()) break;
             String line = scanner.nextLine();
