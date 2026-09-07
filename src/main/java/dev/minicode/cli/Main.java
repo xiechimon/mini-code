@@ -211,23 +211,25 @@ public class Main {
         }
     }
 
+    /**
+     * 事件打印：统一经事件渲染器出字（交互与管道两模式共用）。
+     * 样式由 Style.detect 决定，渲染器为纯函数（不读环境、不碰时钟）。
+     */
     private static void printEvent(AgentEvent e) {
-        if (e instanceof AgentEvent.TurnStart t) {
-            System.out.println("\n[第 " + t.turn() + " 轮] 思考中...");
-        } else if (e instanceof AgentEvent.MessageEnd m) {
-            Message msg = m.message();
-            if (msg.role == Message.Role.assistant) {
-                String txt = msg.text();
-                if (!txt.isBlank()) System.out.println(txt);
-                for (Message.ToolCall tc : msg.toolCalls()) {
-                    System.out.println("→ 调用工具: " + tc.name + " " + tc.argumentsJson);
-                }
-            }
-        } else if (e instanceof AgentEvent.ToolResultEvent tr) {
-            System.out.println("← " + tr.toolCall().name + (tr.isError() ? " [失败]" : "") + ": " + truncate(tr.output(), 800));
-        } else if (e instanceof AgentEvent.AgentEnd ae) {
-            System.out.println("\n[mini-code] 完成（共 " + ae.messages().size() + " 条消息）");
-        }
+        // 样式探测：NO_COLOR 非空 / 非 tty / TERM=dumb 任一命中即去色
+        Style style = Style.detect(System.getenv(), System.console() != null);
+        String rendered = EventRenderer.render(e, style);
+        if (rendered == null || rendered.isEmpty()) return;
+        System.out.println(rendered);
+    }
+
+    /**
+     * 供单测与未来耗时注入使用的显式样式入口（包可见）。
+     */
+    static void printEvent(AgentEvent e, Style style) {
+        String rendered = EventRenderer.render(e, style);
+        if (rendered == null || rendered.isEmpty()) return;
+        System.out.println(rendered);
     }
 
     /**
