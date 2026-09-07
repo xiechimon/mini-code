@@ -1,0 +1,177 @@
+{
+  "id": "2026-09-05-190816",
+  "generated_at": "2026-09-05T11:08:16.928785Z",
+  "language": "zh",
+  "pages": [
+    {
+      "slug": "1-xiang-mu-gai-lan-zui-xiao-hua-zhong-duan-bian-ma-zhi-neng-ti-tao-jian",
+      "title": "项目概览：最小化终端编码智能体套件",
+      "file": "1-xiang-mu-gai-lan-zui-xiao-hua-zhong-duan-bian-ma-zhi-neng-ti-tao-jian.md",
+      "section": "入门指南",
+      "level": "Beginner"
+    },
+    {
+      "slug": "2-kuai-su-shang-shou-an-zhuang-ren-zheng-yu-shou-ci-yun-xing",
+      "title": "快速上手：安装、认证与首次运行",
+      "file": "2-kuai-su-shang-shou-an-zhuang-ren-zheng-yu-shou-ci-yun-xing.md",
+      "section": "入门指南",
+      "level": "Beginner"
+    },
+    {
+      "slug": "3-gong-ying-shang-yu-mo-xing-jie-ru-ding-yue-deng-lu-yu-api-key",
+      "title": "供应商与模型接入：订阅登录与 API Key",
+      "file": "3-gong-ying-shang-yu-mo-xing-jie-ru-ding-yue-deng-lu-yu-api-key.md",
+      "section": "入门指南",
+      "level": "Beginner"
+    },
+    {
+      "slug": "4-jiao-hu-mo-shi-shi-yong-zhi-nan-bian-ji-qi-ming-ling-yu-kuai-jie-jian",
+      "title": "交互模式使用指南：编辑器、命令与快捷键",
+      "file": "4-jiao-hu-mo-shi-shi-yong-zhi-nan-bian-ji-qi-ming-ling-yu-kuai-jie-jian.md",
+      "section": "入门指南",
+      "level": "Beginner"
+    },
+    {
+      "slug": "5-hui-hua-guan-li-shu-xing-fen-zhi-shang-xia-wen-ya-suo-yu-dao-chu",
+      "title": "会话管理：树形分支、上下文压缩与导出",
+      "file": "5-hui-hua-guan-li-shu-xing-fen-zhi-shang-xia-wen-ya-suo-yu-dao-chu.md",
+      "section": "入门指南",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "6-si-chong-yun-xing-mo-shi-jiao-hu-da-yin-json-rpc-yu-sdk",
+      "title": "四种运行模式：交互、打印、JSON、RPC 与 SDK",
+      "file": "6-si-chong-yun-xing-mo-shi-jiao-hu-da-yin-json-rpc-yu-sdk.md",
+      "section": "入门指南",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "7-agent-yun-xing-shi-shi-jian-liu-gong-ju-diao-yong-yu-zhuang-tai-guan-li",
+      "title": "Agent 运行时：事件流、工具调用与状态管理",
+      "file": "7-agent-yun-xing-shi-shi-jian-liu-gong-ju-diao-yong-yu-zhuang-tai-guan-li.md",
+      "section": "深度解析",
+      "group": "智能体内核",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "8-agentmessage-yu-shang-xia-wen-zhuan-huan-guan-xian-transformcontext-converttollm",
+      "title": "AgentMessage 与上下文转换管线（transformContext / convertToLlm）",
+      "file": "8-agentmessage-yu-shang-xia-wen-zhuan-huan-guan-xian-transformcontext-converttollm.md",
+      "section": "深度解析",
+      "group": "智能体内核",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "9-agent-harness-xi-tong-ti-shi-ci-gou-zi-yu-zhi-xing-yin-qing",
+      "title": "Agent Harness：系统提示词、钩子与执行引擎",
+      "file": "9-agent-harness-xi-tong-ti-shi-ci-gou-zi-yu-zhi-xing-yin-qing.md",
+      "section": "深度解析",
+      "group": "智能体内核",
+      "level": "Advanced"
+    },
+    {
+      "slug": "10-pi-ai-tong-duo-gong-ying-shang-api-yu-kua-mo-xing-qie-huan",
+      "title": "pi-ai：统一多供应商 API 与跨模型切换",
+      "file": "10-pi-ai-tong-duo-gong-ying-shang-api-yu-kua-mo-xing-qie-huan.md",
+      "section": "深度解析",
+      "group": "LLM 统一接口",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "11-gong-ju-ding-yi-liu-shi-gong-ju-diao-yong-yu-can-shu-xiao-yan",
+      "title": "工具定义、流式工具调用与参数校验",
+      "file": "11-gong-ju-ding-yi-liu-shi-gong-ju-diao-yong-yu-can-shu-xiao-yan.md",
+      "section": "深度解析",
+      "group": "LLM 统一接口",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "12-ren-zheng-jie-xi-oauth-yu-ping-ju-cun-chu",
+      "title": "认证解析、OAuth 与凭据存储",
+      "file": "12-ren-zheng-jie-xi-oauth-yu-ping-ju-cun-chu.md",
+      "section": "深度解析",
+      "group": "LLM 统一接口",
+      "level": "Advanced"
+    },
+    {
+      "slug": "13-mo-xing-mu-lu-sheng-cheng-jiao-ben-yu-zi-dong-shua-xin-ji-zhi",
+      "title": "模型目录：生成脚本与自动刷新机制",
+      "file": "13-mo-xing-mu-lu-sheng-cheng-jiao-ben-yu-zi-dong-shua-xin-ji-zhi.md",
+      "section": "深度解析",
+      "group": "LLM 统一接口",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "16-agentsession-yu-sdk-jiang-zhi-neng-ti-qian-ru-zi-you-ying-yong",
+      "title": "AgentSession 与 SDK：将智能体嵌入自有应用",
+      "file": "16-agentsession-yu-sdk-jiang-zhi-neng-ti-qian-ru-zi-you-ying-yong.md",
+      "section": "深度解析",
+      "group": "coding-agent 内部实现",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "17-rpc-mo-shi-stdin-stdout-shang-de-json-xie-yi-yu-zheng-gui-ze",
+      "title": "RPC 模式：stdin/stdout 上的 JSON 协议与帧规则",
+      "file": "17-rpc-mo-shi-stdin-stdout-shang-de-json-xie-yi-yu-zheng-gui-ze.md",
+      "section": "深度解析",
+      "group": "coding-agent 内部实现",
+      "level": "Advanced"
+    },
+    {
+      "slug": "18-xi-tong-ti-shi-ci-zu-zhuang-yu-nei-zhi-gong-ju-read-write-edit-bash",
+      "title": "系统提示词组装与内置工具（read/write/edit/bash）",
+      "file": "18-xi-tong-ti-shi-ci-zu-zhuang-yu-nei-zhi-gong-ju-read-write-edit-bash.md",
+      "section": "深度解析",
+      "group": "coding-agent 内部实现",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "19-kuo-zhan-xi-tong-shi-jian-lan-jie-zi-ding-yi-gong-ju-yu-zi-ding-yi-ui",
+      "title": "扩展系统：事件拦截、自定义工具与自定义 UI",
+      "file": "19-kuo-zhan-xi-tong-shi-jian-lan-jie-zi-ding-yi-gong-ju-yu-zi-ding-yi-ui.md",
+      "section": "深度解析",
+      "group": "coding-agent 内部实现",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "20-skills-ti-shi-mo-ban-zhu-ti-yu-pi-bao",
+      "title": "Skills、提示模板、主题与 Pi 包",
+      "file": "20-skills-ti-shi-mo-ban-zhu-ti-yu-pi-bao.md",
+      "section": "深度解析",
+      "group": "coding-agent 内部实现",
+      "level": "Beginner"
+    },
+    {
+      "slug": "21-hui-hua-jsonl-ge-shi-yu-sessionmanager",
+      "title": "会话 JSONL 格式与 SessionManager",
+      "file": "21-hui-hua-jsonl-ge-shi-yu-sessionmanager.md",
+      "section": "深度解析",
+      "group": "coding-agent 内部实现",
+      "level": "Advanced"
+    },
+    {
+      "slug": "22-chord-cha-jian-fu-wu-fu-zhi-zhuang-tai-yu-zeng-liang-zhui-zong",
+      "title": "chord：插件、服务、复制状态与增量追踪",
+      "file": "22-chord-cha-jian-fu-wu-fu-zhi-zhuang-tai-yu-zeng-liang-zhui-zong.md",
+      "section": "深度解析",
+      "group": "实验性分布式架构",
+      "level": "Advanced"
+    },
+    {
+      "slug": "23-pi-protocol-cbor-zheng-bian-ma-yu-lu-you-xin-feng",
+      "title": "pi-protocol：CBOR 帧编码与路由信封",
+      "file": "23-pi-protocol-cbor-zheng-bian-ma-yu-lu-you-xin-feng.md",
+      "section": "深度解析",
+      "group": "实验性分布式架构",
+      "level": "Advanced"
+    },
+    {
+      "slug": "24-pi-server-yu-pi-client-chi-jiu-hui-hua-yu-duo-fu-jian-lu-you",
+      "title": "pi-server 与 pi-client：持久会话与多附件路由",
+      "file": "24-pi-server-yu-pi-client-chi-jiu-hui-hua-yu-duo-fu-jian-lu-you.md",
+      "section": "深度解析",
+      "group": "实验性分布式架构",
+      "level": "Advanced"
+    }
+  ]
+}
