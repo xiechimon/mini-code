@@ -55,7 +55,7 @@ src/main/java/dev/minicode/
 ## MVP 节奏
 
 | MVP | 内容 | 验收 |
-|-----|------|------|
+| ----- | ------ | ------ |
 | MVP1 | AgentLoop + 4工具 + CLI 单句 | `mvn test` 绿 + 真实文件改动 |
 | MVP2 | Permission/Approve + before/afterToolCall + 并行执行 | 危险操作需确认 |
 | MVP3 | Streaming SSE + Context 压缩/裁剪 + Session JSONL | 长对话不爆 token |
@@ -82,3 +82,17 @@ src/main/java/dev/minicode/
 - 改动审查 → `code-review`（传 `since=main` 或分支名）
 - 需要联网调研 → `agent-reach`，需要浏览器交互/截图 → `ego-browser`
 - 需求拆解为 agent 可执行任务书 → `leader`
+
+## Agent skills
+
+### Issue tracker
+
+Issue 以本地 markdown 文件存于 `.scratch/<feature-slug>/`。See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+默认五角色标签，标签串=角色名（needs-triage/needs-info/ready-for-agent/ready-for-human/wontfix）。See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+单上下文：根目录 `CONTEXT.md` + `docs/adr/`。See `docs/agents/domain.md`.

@@ -56,3 +56,6 @@
 - Tool: 供模型调用的结构化能力
 - StreamFn: `Model + Context → AssistantMessageEventStream` 的抽象，与 pi 同名
 - Context: `systemPrompt + messages + tools` 三件套
+- 输入编辑器 (Input Editor): REPL 中接收用户输入的行编辑层（JLine），只管输入，不渲染 agent 事件
+- 事件渲染 (Event Rendering): AgentEvent → 终端文本的呈现层，独立于 AgentLoop 协议；本轮聚焦面
+- 等待反馈 (Turn Feedback): 请求发出到响应返回期间的屏幕呈现；本轮范围外，streaming 归 MVP3
