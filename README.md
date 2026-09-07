@@ -53,6 +53,12 @@ dev.minicode.cli   — Main                                                     
 
 每 MVP 一个分支 → PR → code-review 后合 main。
 
+## git 分支边界
+
+- `main` — 最小 MVP1 内核 + `docs/wiki/`（Pi 学习笔记），当前规范主线。
+- `archive/archify-deep-mod` — 早期一份更模块化的快照（43 个源文件 + 完整 docs 树），只作存档查阅。取回单个文件：
+  `git checkout archive/archify-deep-mod -- <path>`
+
 ## opencode 调研笔记
 
 - Server `opencode serve` 默认 `127.0.0.1:4096`，OpenAPI `/doc`，SDK `@opencode-ai/sdk`，但 LLM 本身不走本地 server
