@@ -6,7 +6,10 @@ import org.junit.jupiter.api.Test;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -50,6 +53,119 @@ class OpenAiCompatClientTest {
         Message m = client.parseResponse(json);
         assertEquals("end", m.stopReason);
         assertEquals("hello java", m.text());
+    }
+
+    @Test
+    void sendsOpencodeSessionHeadersForOpencodeGo() throws Exception {
+        var seen = new ConcurrentHashMap<String, String>();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            exchange.getRequestHeaders().forEach((k, v) -> seen.put(k.toLowerCase(), String.join(",", v)));
+            String body = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}";
+            byte[] b = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, b.length);
+            exchange.getResponseBody().write(b);
+            exchange.close();
+        });
+        server.start();
+        int port = server.getAddress().getPort();
+        try {
+            Model model = new Model("kimi-k2.6", "opencode-go", "http://127.0.0.1:" + port + "/v1", "openai-completions");
+            OpenAiCompatClient client = new OpenAiCompatClient("fake-key");
+            Context ctx = new Context("sys", List.of(Message.user("hi")), List.of());
+            Message msg = client.chat(model, ctx);
+            assertEquals("end", msg.stopReason);
+            assertNotNull(seen.get("x-opencode-session"), "opencode 网关要求 x-opencode-session，缺失会 400 MissingSessionID");
+            assertFalse(seen.get("x-opencode-session").isBlank());
+            assertEquals("mini-code", seen.get("x-opencode-client"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void sessionIdIsStableWithinSameClient() throws Exception {
+        List<Map<String, String>> calls = new ArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            var m = new ConcurrentHashMap<String, String>();
+            exchange.getRequestHeaders().forEach((k, v) -> m.put(k.toLowerCase(), String.join(",", v)));
+            calls.add(m);
+            String body = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}";
+            byte[] b = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, b.length);
+            exchange.getResponseBody().write(b);
+            exchange.close();
+        });
+        server.start();
+        int port = server.getAddress().getPort();
+        try {
+            Model model = new Model("kimi-k2.6", "opencode-go", "http://127.0.0.1:" + port + "/v1", "openai-completions");
+            OpenAiCompatClient client = new OpenAiCompatClient("fake-key");
+            Context ctx = new Context("sys", List.of(Message.user("hi")), List.of());
+            client.chat(model, ctx);
+            client.chat(model, ctx);
+            assertEquals(2, calls.size());
+            assertEquals(calls.get(0).get("x-opencode-session"), calls.get(1).get("x-opencode-session"),
+                    "同一会话内 session 必须稳定，否则网关路由与缓存失效");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void respectsExplicitSessionIdOverride() throws Exception {
+        var seen = new ConcurrentHashMap<String, String>();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            exchange.getRequestHeaders().forEach((k, v) -> seen.put(k.toLowerCase(), String.join(",", v)));
+            String body = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}";
+            byte[] b = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, b.length);
+            exchange.getResponseBody().write(b);
+            exchange.close();
+        });
+        server.start();
+        int port = server.getAddress().getPort();
+        try {
+            Model model = new Model("kimi-k2.6", "opencode-go", "http://127.0.0.1:" + port + "/v1", "openai-completions");
+            OpenAiCompatClient client = new OpenAiCompatClient("fake-key", "pinned-session-123");
+            Context ctx = new Context("sys", List.of(Message.user("hi")), List.of());
+            client.chat(model, ctx);
+            assertEquals("pinned-session-123", seen.get("x-opencode-session"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void doesNotSendOpencodeHeadersForNonOpencode() throws Exception {
+        var seen = new ConcurrentHashMap<String, String>();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            exchange.getRequestHeaders().forEach((k, v) -> seen.put(k.toLowerCase(), String.join(",", v)));
+            String body = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}";
+            byte[] b = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, b.length);
+            exchange.getResponseBody().write(b);
+            exchange.close();
+        });
+        server.start();
+        int port = server.getAddress().getPort();
+        try {
+            Model model = new Model("deepseek-chat", "deepseek", "http://127.0.0.1:" + port + "/v1", "openai-completions");
+            OpenAiCompatClient client = new OpenAiCompatClient("fake-key");
+            Context ctx = new Context("sys", List.of(Message.user("hi")), List.of());
+            client.chat(model, ctx);
+            assertNull(seen.get("x-opencode-session"));
+            assertNull(seen.get("x-opencode-client"));
+        } finally {
+            server.stop(0);
+        }
     }
 
     @Test

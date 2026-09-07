@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * OpenAI 兼容的 HTTP 客户端（MVP 非流式版本）。
@@ -25,13 +26,21 @@ public class OpenAiCompatClient implements LlmClient {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private final HttpClient http;
     private final String apiKeyOverride; // 可为空，为空时从 LlmConfig 解析
+    private final String sessionId; // opencode 网关路由用：每会话稳定，对齐 pi provider-attribution.ts
 
     public OpenAiCompatClient() {
         this(null);
     }
 
     public OpenAiCompatClient(String apiKeyOverride) {
+        this(apiKeyOverride, resolveDefaultSessionId());
+    }
+
+    public OpenAiCompatClient(String apiKeyOverride, String sessionIdOverride) {
         this.apiKeyOverride = apiKeyOverride;
+        this.sessionId = sessionIdOverride != null && !sessionIdOverride.isBlank()
+                ? sessionIdOverride
+                : resolveDefaultSessionId();
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -59,14 +68,19 @@ public class OpenAiCompatClient implements LlmClient {
         HttpResponse<String> resp = null;
         int maxAttempts = 2;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            HttpRequest req = HttpRequest.newBuilder()
+            HttpRequest.Builder builder = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .timeout(Duration.ofSeconds(120))
                     .header("Content-Type", "application/json")
                     .header("Authorization", "Bearer " + apiKey)
-                    .header("User-Agent", "mini-code/0.1")
-                    .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .build();
+                    .header("User-Agent", "mini-code/0.1");
+            // opencode 网关要求 x-opencode-session（见 https://opencode.ai/docs/go/#where-can-i-use-it），
+            // 对齐 pi provider-attribution.ts：仅对 opencode 系目标发送，会话内稳定以便路由与 prompt caching。
+            if (isOpencodeTarget(model)) {
+                builder.header("x-opencode-session", sessionId);
+                builder.header("x-opencode-client", "mini-code");
+            }
+            HttpRequest req = builder.POST(HttpRequest.BodyPublishers.ofString(body)).build();
             resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             int code = resp.statusCode();
             // 500 系与 429 视为可重试
@@ -139,6 +153,26 @@ public class OpenAiCompatClient implements LlmClient {
             case "openai" -> "OPENAI_API_KEY";
             default -> "LLM_API_KEY";
         };
+    }
+
+    /**
+     * 是否走 opencode 网关：对齐 pi provider-attribution.ts 的守卫
+     *（provider 为 opencode 系，或 baseUrl host 为 opencode.ai）。
+     */
+    static boolean isOpencodeTarget(Model model) {
+        if (model.provider() != null && model.provider().startsWith("opencode")) return true;
+        String base = model.baseUrl();
+        return base != null && base.contains("opencode.ai");
+    }
+
+    /**
+     * 默认会话 ID：OPENCODE_SESSION_ID 显式覆盖，否则每 client 实例一个随机 UUID。
+     * 同一 client 在 REPL 多轮 / AgentLoop 多 turn 内复用，保证会话内稳定，满足网关路由与 prompt caching 要求。
+     */
+    static String resolveDefaultSessionId() {
+        String env = System.getenv("OPENCODE_SESSION_ID");
+        if (env != null && !env.isBlank()) return env.trim();
+        return UUID.randomUUID().toString();
     }
 
     /**
