@@ -189,7 +189,6 @@ public class Main {
         List<ToolDefinition> tools = List.of(new ReadTool(workdir), new WriteTool(workdir), new EditTool(workdir), new BashTool(workdir));
         AgentLoop loop = new AgentLoop(llm, model, buildSystemPrompt(workdir), tools, 20);
         List<Message> prompts = List.of(Message.user(prompt));
-        System.out.println("[mini-code] 需求: " + prompt);
         System.out.println("[mini-code] 工作目录: " + workdir);
         System.out.println("---");
         List<Message> result = loop.run(prompts, Main::printEvent);
@@ -202,8 +201,6 @@ public class Main {
      * REPL 单轮，带历史
      */
     private static void runReplTurn(String prompt, List<Message> history, AgentLoop loop) throws Exception {
-        System.out.println("[mini-code] 需求: " + prompt);
-        System.out.println("---");
         List<Message> newPrompts = List.of(Message.user(prompt));
         List<Message> turnResult = loop.runWithHistory(history, newPrompts, Main::printEvent);
         history.addAll(turnResult);
