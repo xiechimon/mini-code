@@ -4,7 +4,15 @@ import dev.minicode.agent.AgentEvent;
 import dev.minicode.agent.AgentLoop;
 import dev.minicode.ai.*;
 import dev.minicode.tools.*;
+import org.jline.reader.EndOfFileException;
+import org.jline.reader.LineReader;
+import org.jline.reader.LineReaderBuilder;
+import org.jline.reader.UserInterruptException;
+import org.jline.terminal.Terminal;
+import org.jline.terminal.TerminalBuilder;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -68,36 +76,102 @@ public class Main {
                 piped = "";
             }
             String[] lines = piped.split("\\R");
-            boolean didWork = false;
-            for (String line : lines) {
-                String trimmed = line.trim();
-                if (trimmed.isEmpty()) continue;
-                if (trimmed.equalsIgnoreCase("exit") || trimmed.equalsIgnoreCase("quit") || trimmed.equalsIgnoreCase("/exit"))
-                    break;
-                runReplTurn(line, history, loopRepl);
-                didWork = true;
-            }
-            if (!didWork) {
+            List<String> prompts = filterPipeLines(List.of(lines));
+            if (prompts.isEmpty()) {
                 System.out.println("[mini-code] 未从管道读取到有效输入，退出。");
             }
+            for (String prompt : prompts) {
+                runReplTurn(prompt, history, loopRepl);
+            }
         } else {
-            // 交互式终端：阻塞式 REPL
-            java.util.Scanner scanner = new java.util.Scanner(System.in, java.nio.charset.StandardCharsets.UTF_8);
-            while (true) {
-                System.out.print("\n> ");
-                System.out.flush();
-                if (!scanner.hasNextLine()) break;
-                String line = scanner.nextLine();
-                if (line == null) break;
-                String trimmed = line.trim();
-                if (trimmed.isEmpty()) continue;
-                if (trimmed.equalsIgnoreCase("exit") || trimmed.equalsIgnoreCase("quit") || trimmed.equalsIgnoreCase("/exit")) {
-                    System.out.println("[mini-code] 再见");
-                    break;
+            // 交互式终端：JLine 行编辑（方向键移动光标、上下翻历史），对齐 pi 的 node:readline。
+            // Scanner 按行缓冲直读 stdin（cooked 模式），方向键转义序列(ESC [ D)会被当成普通字符，原样显示为 ^[[D。
+            Terminal terminal = null;
+            try {
+                terminal = TerminalBuilder.builder().system(true).build();
+            } catch (IOException e) {
+                System.err.println("[mini-code] 终端初始化失败，回退到简单输入模式（方向键可能显示为 ^[[D）: " + e.getMessage());
+            }
+            if (terminal == null) {
+                runScannerRepl(history, loopRepl);
+            } else {
+                try (Terminal t = terminal) {
+                    runJLineRepl(t, history, loopRepl);
+                } catch (IOException e) {
+                    System.err.println("[mini-code] 关闭终端失败: " + e.getMessage());
                 }
-                runReplTurn(line, history, loopRepl);
             }
         }
+    }
+
+    /**
+     * JLine 交互循环：支持方向键编辑与历史，Ctrl-C 放弃当前行，Ctrl-D 退出。
+     */
+    static void runJLineRepl(Terminal terminal, List<Message> history, AgentLoop loop) throws Exception {
+        LineReader reader = LineReaderBuilder.builder().terminal(terminal).build();
+        while (true) {
+            String line;
+            try {
+                line = reader.readLine("\n> ");
+            } catch (UserInterruptException e) {
+                continue; // Ctrl-C：放弃当前行，继续下一轮
+            } catch (EndOfFileException e) {
+                System.out.println("[mini-code] 再见");
+                break;
+            }
+            if (line == null) break;
+            String trimmed = line.trim();
+            if (trimmed.isEmpty()) continue;
+            if (isExitCommand(trimmed)) {
+                System.out.println("[mini-code] 再见");
+                break;
+            }
+            runReplTurn(line, history, loop);
+        }
+    }
+
+    /**
+     * 降级输入循环：终端初始化失败时使用，无行编辑能力（方向键显示为 ^[[D）。
+     */
+    static void runScannerRepl(List<Message> history, AgentLoop loop) throws Exception {
+        java.util.Scanner scanner = new java.util.Scanner(System.in, StandardCharsets.UTF_8);
+        while (true) {
+            System.out.print("\n> ");
+            System.out.flush();
+            if (!scanner.hasNextLine()) break;
+            String line = scanner.nextLine();
+            if (line == null) break;
+            String trimmed = line.trim();
+            if (trimmed.isEmpty()) continue;
+            if (isExitCommand(trimmed)) {
+                System.out.println("[mini-code] 再见");
+                break;
+            }
+            runReplTurn(line, history, loop);
+        }
+    }
+
+    /**
+     * 是否退出命令（exit/quit//exit，大小写不敏感）。
+     */
+    static boolean isExitCommand(String trimmed) {
+        return trimmed.equalsIgnoreCase("exit")
+                || trimmed.equalsIgnoreCase("quit")
+                || trimmed.equalsIgnoreCase("/exit");
+    }
+
+    /**
+     * 管道输入过滤：去空行，遇退出命令截断（与交互循环语义一致）。
+     */
+    static List<String> filterPipeLines(List<String> lines) {
+        List<String> out = new ArrayList<>();
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty()) continue;
+            if (isExitCommand(trimmed)) break;
+            out.add(line);
+        }
+        return out;
     }
 
     /**

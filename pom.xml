@@ -19,6 +19,7 @@
         <junit.version>5.11.0</junit.version>
         <mockito.version>5.11.0</mockito.version>
         <slf4j.version>2.0.13</slf4j.version>
+        <jline.version>3.27.1</jline.version>
     </properties>
 
     <dependencies>
@@ -44,6 +45,13 @@
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-simple</artifactId>
             <version>${slf4j.version}</version>
+        </dependency>
+
+        <!-- 行编辑：REPL 方向键/历史（JDK 无 readline，JLine 是标准最小方案，无传递依赖） -->
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline</artifactId>
+            <version>${jline.version}</version>
         </dependency>
 
         <!-- Test -->
