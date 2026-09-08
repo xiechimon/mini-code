@@ -9,8 +9,8 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * BlockStreamer 单测：进度行原位更新、块完成渲染、围栏语义、终态冲刷与中断标记。
- * 对应规格：块级流式渲染（滚出视口不可擦除 → 渲染块一次成型，进度行单行可擦除）。
+ * BlockStreamer 单测：开放块原位重绘（正文可见增长）、块定稿无残留、围栏闭合才成盒、终态冲刷与中断标记。
+ * 对应规格：行级流式渲染取代块级计数器——流式期间屏幕上应「看到正文」，而非仅一根「▌ 已生成 N 字」进度行。
  */
 class BlockStreamerTest {
 
@@ -26,33 +26,35 @@ class BlockStreamerTest {
     }
 
     @Test
-    void firstDeltaErasesPlaceholderAndShowsProgress() {
+    void firstDeltaErasesPlaceholderAndShowsText() {
         BlockStreamer bs = newStreamer(Style.PLAIN, 80);
         bs.delta("你好");
         String o = out();
-        // 首个增量应先 \r+EL 擦除 TurnStart 的「思考中」占位行，再显示进度
-        assertTrue(o.contains("\r\u001B[2K"), "应擦除占位行: " + o);
-        assertTrue(o.contains("▌ 已生成 2 字"), "进度应按码点计数: " + o);
+        // 首个增量应先 \r+CUU(1)+EL 覆盖「思考中」占位行，再把正文直接上屏
+        assertTrue(o.contains("\r[1A[2K"), "应覆盖占位行: " + o);
+        assertTrue(o.contains("你好"), "正文应立即可见: " + o);
+        assertFalse(o.contains("▌"), "不应退化为进度计数器: " + o);
     }
 
     @Test
-    void progressCountsUpAcrossDeltas() {
+    void streamGrowsAcrossDeltasWithoutCounter() {
         BlockStreamer bs = newStreamer(Style.PLAIN, 80);
         bs.delta("你好");
         captured.reset();
         bs.delta("世界");
         String o = out();
-        assertTrue(o.contains("▌ 已生成 4 字"), "计数应跨增量累计: " + o);
+        // 增量直接累积到已上屏正文，而非仅更新计数
+        assertTrue(o.contains("你好世界"), "正文应随增量增长: " + o);
+        assertFalse(o.contains("▌"), "不应退化为进度计数器: " + o);
     }
 
     @Test
-    void paragraphCompletesOnBlankLineAndStripsMarkdownMarkers() {
+    void paragraphSealsOnBlankLineAndStripsMarkdownMarkers() {
         BlockStreamer bs = newStreamer(Style.PLAIN, 80);
         bs.delta("# 标题\n\n");
         String o = out();
-        // 块在同一增量内完成：不显示进度行（无闪烁），直接渲染
-        assertFalse(o.contains("▌"), "瞬时完成的块不应显示进度行: " + o);
-        assertFalse(o.contains("#"), "渲染块不应保留 # 标记: " + o);
+        assertFalse(o.contains("▌"), "已完成块不应显示计数器: " + o);
+        assertFalse(o.contains("#"), "定稿不应保留 # 标记: " + o);
         assertTrue(o.contains("标题"));
     }
 
