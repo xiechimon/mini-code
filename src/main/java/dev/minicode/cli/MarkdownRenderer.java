@@ -153,14 +153,16 @@ public final class MarkdownRenderer {
         } else {
             lines = stripped.split("\n", -1);
         }
-        int maxLen = 0;
+        int maxVisible = 0;
         for (String l : lines) {
-            if (l.length() > maxLen) maxLen = l.length();
+            int w = AnsiTextUtil.visibleLength(l);
+            if (w > maxVisible) maxVisible = w;
         }
-        int borderLen = Math.max(3, maxLen);
-        // 上下边线长度为 maxLen+2，使视觉上与内容区（"│ "+内容）对齐
-        String top = "┌" + "─".repeat(borderLen + 2);
-        String bottom = "└" + "─".repeat(borderLen + 2);
+        int borderLen = Math.max(3, maxVisible);
+        // 封角边框：┌ + (borderLen+1)个─ + ┐；内容区为“│ ”+内容（左缩进 1），右缘对称
+        // 宽度按显示宽度计（CJK/emoji 计 2），否则 CJK 代码行会撑出边框
+        String top = "┌" + "─".repeat(borderLen + 1) + "┐";
+        String bottom = "└" + "─".repeat(borderLen + 1) + "┘";
         if (style.colorEnabled()) {
             String grayTop = Style.ANSI_GRAY + top + Style.ANSI_RESET;
             String grayBottom = Style.ANSI_GRAY + bottom + Style.ANSI_RESET;

@@ -227,7 +227,7 @@ class MarkdownRendererTest {
         String codeWrapped = MarkdownRenderer.render("`" + longWord + "`", color, w);
         for (String line : codeWrapped.split("\n")) {
             assertTrue(strip(line).length() <= w);
-            assertTrue(line.contains(Style.ANSI_GREEN) || strip(line).length() == 0, "行内代码每段应含绿");
+            assertTrue(line.contains(Style.ANSI_GREEN) || strip(line).isEmpty(), "行内代码每段应含绿");
         }
         assertEquals(plainWrapped, strip(codeWrapped));
     }
@@ -1225,6 +1225,96 @@ class MarkdownRendererTest {
             if (vis.contains("z") && !vis.contains("x") && !vis.contains("y")) {
                 assertTrue(line.contains(Style.ANSI_STRIKETHROUGH), "z 段硬折应含 STRIKETHROUGH");
             }
+        }
+    }
+
+    /**
+     * 独立显示宽度 oracle：CJK/全角/常见 emoji 计 2 列，其余计 1。
+     * 不依赖被测实现，用于对齐验证。
+     */
+    private static int dw(String s) {
+        String t = s.replaceAll("\u001B\\[[0-9;]*m", "");
+        int w = 0;
+        for (int i = 0; i < t.length(); ) {
+            int cp = t.codePointAt(i);
+            w += isWideCp(cp) ? 2 : 1;
+            i += Character.charCount(cp);
+        }
+        return w;
+    }
+
+    private static boolean isWideCp(int cp) {
+        return (cp >= 0x1100 && cp <= 0x115F)
+                || (cp >= 0x2E80 && cp <= 0x303E)
+                || (cp >= 0x3041 && cp <= 0x33FF)
+                || (cp >= 0x3400 && cp <= 0x4DBF)
+                || (cp >= 0x4E00 && cp <= 0x9FFF)
+                || (cp >= 0xA000 && cp <= 0xA4CF)
+                || (cp >= 0xAC00 && cp <= 0xD7A3)
+                || (cp >= 0xF900 && cp <= 0xFAFF)
+                || (cp >= 0xFE30 && cp <= 0xFE6F)
+                || (cp >= 0xFF00 && cp <= 0xFF60)
+                || (cp >= 0xFFE0 && cp <= 0xFFE6)
+                || cp == 0x2705 || cp == 0x2714 || cp == 0x2716 || cp == 0x274C
+                || cp == 0x2B50 || cp == 0x2B55
+                || (cp >= 0x1F300 && cp <= 0x1FAFF);
+    }
+
+    @Test
+    void tableCjkEmojiColumnsDisplayAligned() {
+        String md = """
+                | 项目 | 状态 |
+                | --- | --- |
+                | Maven | ✅ |
+                | 构建工具 | 通过 |
+                """;
+        String out = MarkdownRenderer.render(md, color, 80);
+        String[] lines = out.split("\n");
+        // 期望列宽：col1 = max(项目=4, Maven=5, 构建工具=8) = 8；col2 = max(状态=4, ✅=2, 通过=4) = 4
+        // 表头行："项目"+4sp + " | " + "状态"+2sp
+        // 表头：col1=8（项目+4sp），col2=4（状态显示宽 4，无填充）；表头带 ANSI_BOLD 包裹，剥离后比较
+        assertEquals("项目     | 状态", strip(lines[0]));
+        // 各行显示宽度一致（显示列宽而非字符数）
+        int w = dw(lines[0]);
+        for (String line : lines) {
+            assertEquals(w, dw(line), "行显示宽度应对齐: [" + line + "]");
+        }
+        // 去色后同样对齐
+        String plainOut = MarkdownRenderer.render(md, plain, 80);
+        int pw = dw(plainOut.split("\n")[0]);
+        for (String line : plainOut.split("\n")) {
+            assertEquals(pw, dw(line), "去色行显示宽度应对齐: [" + line + "]");
+        }
+    }
+
+    @Test
+    void codeBlockCornersClosedAndCjkBorderWidth() {
+        String out = MarkdownRenderer.render("```\nbrew upgrade maven\n中文注释\n```\n", color, 80);
+        String[] lines = out.split("\n");
+        assertEquals(4, lines.length, "应为中心框 4 行");
+        // 右上/右下角封口
+        // 注意：颜色模式下顶/底线被 GRAY 包裹，断言前先剥离 ANSI
+        assertTrue(strip(lines[0]).startsWith("┌") && strip(lines[0]).endsWith("┐"), "顶线应封角: " + lines[0]);
+        assertTrue(strip(lines[3]).startsWith("└") && strip(lines[3]).endsWith("┘"), "底线应封角: " + lines[3]);
+        // 边框长度 = 最长内容显示宽度 + 左右各 1：maxVisible=18 → ┌+19─+┐ = 21 列
+        assertEquals(21, dw(lines[0]), "顶线显示宽度: " + lines[0]);
+        assertEquals(21, dw(lines[3]), "底线显示宽度: " + lines[3]);
+        // 内容行不超出边框
+        assertTrue(dw(lines[1]) <= dw(lines[0]) && dw(lines[2]) <= dw(lines[0]));
+        // 纯 CJK 内容块：中文两字显示宽 4 → 边框 = 4+2 = 6+1? maxVisible=4 → ┌+5─+┐ = 7 列
+        String cjk = MarkdownRenderer.render("```\n中文\n```\n", plain, 80);
+        String[] cl = cjk.split("\n");
+        assertEquals(7, dw(cl[0]), "CJK 内容块顶线应按显示宽度算: " + cl[0]);
+        assertTrue(cl[0].endsWith("┐") && cl[2].endsWith("┘"));
+    }
+
+    @Test
+    void wrapCountsCjkAsTwoColumns() {
+        // 12 个 CJK 字符显示宽 24，宽 10 折行后每行显示宽应 ≤10（即每行 ≤5 个 CJK 字符）
+        String text = "一二三四五六七八九十甲乙";
+        String out = MarkdownRenderer.render(text, plain, 10);
+        for (String line : out.split("\n")) {
+            assertTrue(dw(line) <= 10, "折行后行显示宽应 ≤10: [" + line + "] dw=" + dw(line));
         }
     }
 }

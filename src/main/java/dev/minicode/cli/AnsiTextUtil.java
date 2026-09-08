@@ -31,10 +31,46 @@ public final class AnsiTextUtil {
         return s.replaceAll("\u001B\\[[0-9;]*m", "");
     }
 
-    /** 可见长度（剥离 ANSI 后）。 */
+    /** 可见显示宽度（剥离 ANSI 后）：CJK/全角/常见 emoji 计 2 列，其余 1 列。 */
     public static int visibleLength(String s) {
         if (s == null) return 0;
-        return stripAnsi(s).length();
+        return displayWidth(stripAnsi(s));
+    }
+
+    /** 逐码点累加显示宽度。 */
+    private static int displayWidth(String s) {
+        int w = 0;
+        for (int i = 0; i < s.length(); ) {
+            int cp = s.codePointAt(i);
+            w += charWidth(cp);
+            i += Character.charCount(cp);
+        }
+        return w;
+    }
+
+    /**
+     * 单码点显示宽度：宽字符（CJK/全角/Hangul/常见 emoji）计 2，其余计 1。
+     * 务实范围表而非完整 EAW——覆盖终端场景绝大多数字符。
+     */
+    static int charWidth(int cp) {
+        return isWideCodePoint(cp) ? 2 : 1;
+    }
+
+    private static boolean isWideCodePoint(int cp) {
+        return (cp >= 0x1100 && cp <= 0x115F)
+                || (cp >= 0x2E80 && cp <= 0x303E)
+                || (cp >= 0x3041 && cp <= 0x33FF)
+                || (cp >= 0x3400 && cp <= 0x4DBF)
+                || (cp >= 0x4E00 && cp <= 0x9FFF)
+                || (cp >= 0xA000 && cp <= 0xA4CF)
+                || (cp >= 0xAC00 && cp <= 0xD7A3)
+                || (cp >= 0xF900 && cp <= 0xFAFF)
+                || (cp >= 0xFE30 && cp <= 0xFE6F)
+                || (cp >= 0xFF00 && cp <= 0xFF60)
+                || (cp >= 0xFFE0 && cp <= 0xFFE6)
+                || cp == 0x2705 || cp == 0x2714 || cp == 0x2716 || cp == 0x274C
+                || cp == 0x2B50 || cp == 0x2B55
+                || (cp >= 0x1F300 && cp <= 0x1FAFF);
     }
 
     /**
@@ -90,15 +126,17 @@ public final class AnsiTextUtil {
         int i = 0;
         int n = s.length();
         while (i < n && vis < target) {
-            char c = s.charAt(i);
             int ansiEnd = findAnsiEnd(s, i);
             if (ansiEnd != -1) {
                 out.append(s, i, ansiEnd + 1);
                 i = ansiEnd + 1;
             } else {
-                out.append(c);
-                vis++;
-                i++;
+                int cp = s.codePointAt(i);
+                int cw = charWidth(cp);
+                int end = i + Character.charCount(cp);
+                out.append(s, i, end);
+                vis += cw;
+                i = end;
             }
         }
         String cur = out.toString();
@@ -183,7 +221,11 @@ public final class AnsiTextUtil {
                 visibleAtLastSpace = visible;
                 i++;
             } else {
-                if (visible + 1 > target) {
+                // 普通字符：按码点宽度累计（CJK/emoji 计 2）
+                int cp = text.codePointAt(i);
+                int cw = charWidth(cp);
+                int cpEnd = i + Character.charCount(cp);
+                if (visible + cw > target) {
                     if (lastSpacePos != -1) {
                         String before = cur.substring(0, lastSpacePos);
                         String after = cur.substring(lastSpacePos + 1);
@@ -197,27 +239,27 @@ public final class AnsiTextUtil {
                         if (active != null && !after.startsWith(active)) cur.append(active);
                         cur.append(after);
                         visible = visible - visibleAtLastSpace;
-                        cur.append(c);
-                        visible += 1;
+                        cur.append(text, i, cpEnd);
+                        visible += cw;
                         lastSpacePos = -1;
                         visibleAtLastSpace = -1;
-                        i++;
+                        i = cpEnd;
                     } else {
                         String active = findActiveAnsi(cur.toString());
                         if (active != null) result.append(cur).append(Style.ANSI_RESET).append('\n');
                         else result.append(cur).append('\n');
                         cur.setLength(0);
                         if (active != null) cur.append(active);
-                        cur.append(c);
-                        visible = 1;
+                        cur.append(text, i, cpEnd);
+                        visible = cw;
                         lastSpacePos = -1;
                         visibleAtLastSpace = -1;
-                        i++;
+                        i = cpEnd;
                     }
                 } else {
-                    cur.append(c);
-                    visible++;
-                    i++;
+                    cur.append(text, i, cpEnd);
+                    visible += cw;
+                    i = cpEnd;
                 }
             }
         }
