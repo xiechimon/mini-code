@@ -127,7 +127,7 @@ public class Main {
         List<Message> history = new ArrayList<>();
         // 区分管道 vs 交互式终端：System.console()==null 表示管道/重定向，此时一次性读完所有行后退出，避免 hasNextLine 阻塞
         if (System.console() == null) {
-            // 管道模式：一次性读取 stdin 所有内容，按行处理；不启用流式与重绘，走同步路径，零 StreamDelta
+            // 管道模式：一次性读取 stdin 所有内容，按行处理；不启用流式与重绘，走同步路径，零流式事件
             String piped;
             try {
                 piped = new String(System.in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
@@ -423,7 +423,7 @@ public class Main {
 
     /**
      * one-shot 执行一次——tty 时与 REPL 同款块级流式体验：注册 SIGINT 触发器 + BlockStreamer 块级渲染；
-     * 管道（非 tty）时走同步路径，零 StreamDelta、无逐字与控制序列。
+     * 管道（非 tty）时走同步路径，零流式事件、无逐字与控制序列。
      */
     private static void runOneTurn(String prompt, Path workdir) throws Exception {
         LlmConfig cfg = LlmConfig.resolve();
@@ -482,7 +482,7 @@ public class Main {
     /**
      * REPL 单轮，带历史（计时与事件流计数在此注入渲染器）。
      * 管道模式真正非流式——不注册 SIGINT、不产生光标控制序列，走同步 chat 等价路径，
-     * 零 StreamDelta 发射、无逐字输出行为，仅在 MessageEnd/AgentEnd 输出最终渲染。
+     * 零流式事件 发射、无逐字输出行为，仅在 MessageEnd/AgentEnd 输出最终渲染。
      */
     private static void runReplTurn(String prompt, List<Message> history, AgentLoop loop) throws Exception {
         Style style = Style.detect(System.getenv(), System.console() != null);
@@ -523,7 +523,7 @@ public class Main {
      * REPL 单轮（带样式与宽度注入，供 JLine 交互路径复用，流式）。
      * <p>
      * 交互流式路径：持有 {@link BlockStreamer}（块边界检测 + 单行进度指示）并在 EventSink 中处理
-     * {@link AgentEvent.StreamDelta} 的直出与首片段覆盖、MessageEnd 的回退重绘与 aborted 标记；
+     * {@link AgentEvent.MessageUpdate} 的直出与首片段覆盖、MessageEnd 的回退重绘与 aborted 标记；
      * SIGINT 映射由 AgentLoop 的 triggerSupplier（SigIntInterruptTrigger）在流式期间注册/注销，
      * 保证 Ctrl-C 仅取消本轮生成而不退进程，且结束后恢复 JLine 的弃行语义。
      * </p>
@@ -556,13 +556,15 @@ public class Main {
         return e -> {
             if (e instanceof AgentEvent.TurnStart) {
                 turns[0]++;
-                streamer.reset();
                 String rendered = EventRenderer.render(e, style, width);
                 if (rendered == null || rendered.isEmpty()) return;
                 System.out.println(rendered);
                 return;
-            } else if (e instanceof AgentEvent.StreamDelta sd) {
-                streamer.delta(sd.delta());
+            } else if (e instanceof AgentEvent.MessageStart) {
+                streamer.reset();                        // 消息开始：刷新流式状态（重装备用，覆盖后续占位行）
+                return;
+            } else if (e instanceof AgentEvent.MessageUpdate mu) {
+                streamer.delta(mu.delta());
                 return;
             } else if (e instanceof AgentEvent.MessageEnd me) {
                 streamer.flush("aborted".equals(me.message().stopReason));

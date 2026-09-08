@@ -59,11 +59,11 @@
 - 输入编辑器 (Input Editor): REPL 中接收用户输入的行编辑层（JLine），只管输入，不渲染 agent 事件
 - 事件渲染 (Event Rendering): AgentEvent → 终端文本的呈现层，独立于 AgentLoop 协议；本轮聚焦面
 - 等待反馈 (Turn Feedback): 请求发出到响应返回期间的屏幕呈现；由流式增量与生成中断构成，不再依赖轮首占位行
-- 流式增量 (Stream Delta): LLM 逐片段返回的文本增量；累积进当前开放块，未完成块随增量**原位重绘**（正文可见增长），完成块一次定稿打印、不再重绘；结构性块（围栏/表格）闭合才成盒成表；超出视口退化追加
+- 流式增量 (Stream Delta): LLM 逐片段返回的文本增量（事件名 `MessageUpdate`）；累积进当前开放块，未完成块随增量**原位重绘**（正文可见增长），完成块一次定稿打印、不再重绘；结构性块（围栏/表格）闭合才成盒成表；超出视口退化追加
 - 生成中断 (Generation Interrupt): 用户在流式期间触发的取消；已生成的 partial 保留（stopReason=aborted）并追加了中断标记，未执行的工具调用不执行
 - 对齐 pi (Alignment as Reference): mini-code 以 pi 为参照，但对齐的是抽象、边界与语义（名称/形状），不机械复制类型或实现；与 pi 不同处作有意偏离并记录，见 `docs/adr/0002`
-- 有意偏离 (Deliberate Deviation): mini-code 主动选择与 pi 不同且有明确理由的做法（如无 TUI → 流式用原位重绘渲染 markdown 块；增量简化为单一 StreamDelta；Message 用单一类+Role）。每处需在 ADR/类头注明「对齐 pi X，但有意简化为 Y」
-- 消息生命周期 (Message Lifecycle): pi 的 `message_start / message_update / message_end` 三事件；mini-code 当前以 `StreamDelta`（≈ update）+ `MessageEnd`（≈ end）近似，尚无显式 `message_start`；后续拟对齐
+- 有意偏离 (Deliberate Deviation): mini-code 主动选择与 pi 不同且有明确理由的做法（如无 TUI → 流式用原位重绘渲染 markdown 块；增量简化为单一 MessageUpdate；Message 用单一类+Role）。每处需在 ADR/类头注明「对齐 pi X，但有意简化为 Y」
+- 消息生命周期 (Message Lifecycle): 一条助手消息从开始到结束的三事件 `MessageStart / MessageUpdate / MessageEnd`，对齐 pi 的 `message_start/update/end`；增量走**单层** `MessageUpdate`（原 `StreamDelta` 改名，不拆 pi 的两层 delta）；`aborted` 作为 `MessageEnd` 的 stopReason 变体（中断仍是一段消息的结束，非额外事件）；`MessageEnd` 携带最终完整消息、语义不变
 - 追加式会话树 (Append-only Session Tree): 会话持久化用追加式 JSONL 树（每条记录带 `id`/`parentId` 构成树、`leaf` 指针定当前对话位置、branch/compact/resume 均为指针/新增操作），对齐 pi 的 SessionManager
 - 正文渲染 (Markdown Rendering): 助手消息正文的 Markdown→终端文本呈现，事件渲染的子层；颜色仍只标角色，降级规则与事件渲染同源
 - 纯函数渲染缝: 渲染器只吃输入（文本/事件/样式/宽度）出文本，不读环境不碰时钟，单测断言输出字符串

@@ -13,10 +13,11 @@ public sealed interface AgentEvent permits
         AgentEvent.AgentEnd,
         AgentEvent.TurnStart,
         AgentEvent.TurnEnd,
+        AgentEvent.MessageStart,
         AgentEvent.MessageEnd,
+        AgentEvent.MessageUpdate,
         AgentEvent.ToolStart,
-        AgentEvent.ToolResultEvent,
-        AgentEvent.StreamDelta {
+        AgentEvent.ToolResultEvent {
 
     /**
      * Agent 开始
@@ -43,9 +44,27 @@ public sealed interface AgentEvent permits
     }
 
     /**
+     * 消息开始——一条助手指令消息的生命周期起点（对齐 pi 的 message_start）。
+     * 在首个增量之前发射；配合 {@link MessageUpdate}（逐片段增量）与 {@link MessageEnd}（最终完整消息）
+     * 构成消息生命周期。仅流式期间发射；管道同步路径零流式事件，只有 MessageEnd。
+     */
+    record MessageStart() implements AgentEvent {
+    }
+
+    /**
      * 消息结束
      */
     record MessageEnd(Message message) implements AgentEvent {
+    }
+
+    /**
+     * 流式增量——携带一次文本片段（对齐 pi 的 message_update，原 StreamDelta 更名）。
+     * 对应 CONTEXT.md 的“流式增量”术语；仅在流式期间逐片段发射。
+     * MessageEnd 语义不变（携带最终完整 Message）。
+     *
+     * @param delta 文本片段（非空时原样直出，终态由 MessageEnd 的完整渲染替换）
+     */
+    record MessageUpdate(String delta) implements AgentEvent {
     }
 
     /**
@@ -58,15 +77,5 @@ public sealed interface AgentEvent permits
      * 工具执行结果
      */
     record ToolResultEvent(Message.ToolCall toolCall, String output, boolean isError) implements AgentEvent {
-    }
-
-    /**
-     * 流式增量——携带一次文本片段（又名 MessageDelta，见 PR 草稿）。
-     * 对应 spec 的“流式增量”与 CONTEXT.md 的 Stream Delta 术语；协议扩展已获规格授权。
-     * MessageEnd 语义不变（携带最终完整 Message），本事件仅在流式期间逐片段发射。
-     *
-     * @param delta 文本片段（非空时原样直出，终态由 MessageEnd 的完整渲染替换）
-     */
-    record StreamDelta(String delta) implements AgentEvent {
     }
 }

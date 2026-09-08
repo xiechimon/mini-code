@@ -22,7 +22,7 @@ import java.util.stream.Collectors;
  * 通过 EventSink 对外发射事件，便于观测与后续 TUI 接入。
  * <p>
  * 03 票起统一走 {@link LlmClient#stream} 流式路径：每个文本片段回调即发射
- * {@link AgentEvent.StreamDelta}，片段累积为完整文本后走既有 MessageEnd 路径；
+ * {@link AgentEvent.MessageUpdate}，片段累积为完整文本后走既有 MessageEnd 路径；
  * 工具调用分发的完整 JSON 仍从拼装结果取。default stream 在零回调时等价同步，
  * 因此既有 fake 测试零改动；中断触发器可注入，置位即通过 stream 的取消参数生效。
  * </p>
@@ -36,7 +36,7 @@ public class AgentLoop {
     private final List<ToolDefinition> tools;
     private final int maxTurns; // 最大轮次，防止无限循环
     private final Supplier<InterruptTrigger> triggerSupplier;
-    private final boolean streamingEnabled; // 管道模式禁用流式，零 StreamDelta 发射
+    private final boolean streamingEnabled; // 管道模式禁用流式，零流式事件发射
 
     public AgentLoop(LlmClient llm, Model model, String systemPrompt, List<ToolDefinition> tools, int maxTurns) {
         this(llm, model, systemPrompt, tools, maxTurns, (Supplier<InterruptTrigger>) null, true);
@@ -55,9 +55,9 @@ public class AgentLoop {
     }
 
     /**
-     * 带流式开关的构造——管道模式（非 tty）传 false 走同步 chat 等价路径，零 StreamDelta 发射。
+     * 带流式开关的构造——管道模式（非 tty）传 false 走同步 chat 等价路径，零流式事件发射。
      *
-     * @param streamingEnabled false 时禁用流式，streamOnce 直接委派 chat，不发射 StreamDelta
+     * @param streamingEnabled false 时禁用流式，streamOnce 直接委派 chat，不发射 MessageUpdate
      */
     public AgentLoop(LlmClient llm, Model model, String systemPrompt, List<ToolDefinition> tools, int maxTurns,
                      Supplier<InterruptTrigger> triggerSupplier, boolean streamingEnabled) {
@@ -178,12 +178,12 @@ public class AgentLoop {
 
     /**
      * 单次调用：流式启用时每次取触发器（置位即取消），完成后释放；
-     * 每个文本片段回调即发射 {@link AgentEvent.StreamDelta}，累积为完整 Message 后返回。
-     * 管道模式禁用流式时直接走同步 chat 等价路径，零 StreamDelta 发射、无逐字输出。
+     * 每个文本片段回调即发射 {@link AgentEvent.MessageUpdate}，累积为完整 Message 后返回。
+     * 管道模式禁用流式时直接走同步 chat 等价路径，零流式事件发射、无逐字输出。
      * 中断语义：已收文本以 stopReason=aborted 的 partial 进入历史，本轮工具不执行。
      */
     private Message streamOnce(Context ctx, EventSink sink) throws Exception {
-        // 管道禁用流式：走既有同步路径，等价 chat，不发射 StreamDelta
+        // 管道禁用流式：走既有同步路径，等价 chat，不发射 MessageUpdate
         if (!streamingEnabled) {
             Message sync = llm.chat(model, ctx);
             if (sync == null) {
@@ -209,11 +209,12 @@ public class AgentLoop {
         StringBuilder partialBuffer = new StringBuilder();
         Message result;
         try {
+            if (sink != null) sink.on(new AgentEvent.MessageStart());   // 消息生命周期起点（对齐 pi message_start）
             result = llm.stream(model, ctx, delta -> {
                 if (delta != null) {
                     partialBuffer.append(delta);
                     if (!delta.isEmpty() && sink != null) {
-                        sink.on(new AgentEvent.StreamDelta(delta));
+                        sink.on(new AgentEvent.MessageUpdate(delta));
                     }
                 }
             }, isCancelled);
