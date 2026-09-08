@@ -26,3 +26,8 @@ Closes tickets: `issues/01` · `issues/02` · `issues/03` · `issues/04`
 - 修复：管道真正非流式（streamingEnabled 开关）/ one-shot 接入 SIGINT+重绘 / abort 判定校验 / 回退防重入 / 无状态 delta 分支消除 / SseParser 忽略字段补测
 - mvn test：229 passed
 - pty 实测：真实流式逐字上屏、Ctrl-C 中断不退进程、partial+⏹ 保留、中断后继续对话
+
+## 设计转向（块级流式）
+
+- 回退重绘（CUU+ESC[J）在真实终端上对超长回复失效：滚出视口的内容不可擦除，残留双份（终端模拟器回路证实）
+- 改为块级流式：块完成即打印渲染版，未完成块以单行进度指示呈现；渲染块一次成型永不重绘

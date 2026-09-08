@@ -420,7 +420,7 @@ public class Main {
     }
 
     /**
-     * one-shot 执行一次——tty 时与 REPL 同款流式体验：注册 SIGINT 触发器 + StreamState 重绘；
+     * one-shot 执行一次——tty 时与 REPL 同款块级流式体验：注册 SIGINT 触发器 + BlockStreamer 块级渲染；
      * 管道（非 tty）时走同步路径，零 StreamDelta、无逐字与控制序列。
      */
     private static void runOneTurn(String prompt, Path workdir) throws Exception {
@@ -446,29 +446,24 @@ public class Main {
         if (isTty) {
             java.util.function.Supplier<InterruptTrigger> triggerSupplier = () -> new SigIntInterruptTrigger();
             AgentLoop loop = new AgentLoop(llm, model, buildSystemPrompt(workdir), tools, 20, triggerSupplier);
-            StreamState streamState = new StreamState(renderWidth);
+            BlockStreamer streamer = new BlockStreamer(renderStyle, renderWidth, System.out);
             AgentLoop.EventSink sink = e -> {
                 if (e instanceof AgentEvent.TurnStart) {
                     turns[0]++;
-                    streamState.reset();
+                    streamer.reset();
                     String rendered = EventRenderer.render(e, renderStyle, renderWidth);
                     if (rendered == null || rendered.isEmpty()) return;
                     System.out.println(rendered);
                     return;
                 } else if (e instanceof AgentEvent.StreamDelta sd) {
-                    String rendered = EventRenderer.render(sd, renderStyle, renderWidth, streamState);
-                    if (rendered == null || rendered.isEmpty()) return;
-                    System.out.print(rendered);
-                    System.out.flush();
+                    streamer.delta(sd.delta());
                     return;
                 } else if (e instanceof AgentEvent.MessageEnd me) {
-                    String rendered = EventRenderer.render(me, renderStyle, renderWidth, streamState);
-                    if (rendered == null || rendered.isEmpty()) return;
-                    System.out.println(rendered);
+                    streamer.flush("aborted".equals(me.message().stopReason));
                     return;
                 } else if (e instanceof AgentEvent.AgentEnd ae) {
                     Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-                    String rendered = EventRenderer.render(ae, renderStyle, TurnStats.of(elapsed, turns[0], toolCalls[0]), renderWidth, streamState);
+                    String rendered = EventRenderer.render(ae, renderStyle, TurnStats.of(elapsed, turns[0], toolCalls[0]), renderWidth);
                     if (rendered == null || rendered.isEmpty()) return;
                     System.out.println(rendered);
                     return;
@@ -551,7 +546,7 @@ public class Main {
     /**
      * REPL 单轮（带样式与宽度注入，供 JLine 交互路径复用，流式）。
      * <p>
-     * 交互流式路径：持有 {@link StreamState}（宽度感知行数记账）并在 EventSink 中处理
+     * 交互流式路径：持有 {@link BlockStreamer}（块边界检测 + 单行进度指示）并在 EventSink 中处理
      * {@link AgentEvent.StreamDelta} 的直出与首片段覆盖、MessageEnd 的回退重绘与 aborted 标记；
      * SIGINT 映射由 AgentLoop 的 triggerSupplier（SigIntInterruptTrigger）在流式期间注册/注销，
      * 保证 Ctrl-C 仅取消本轮生成而不退进程，且结束后恢复 JLine 的弃行语义。
@@ -565,29 +560,24 @@ public class Main {
         int[] toolCalls = {0};
         Style s = style;
         int w = width;
-        StreamState streamState = new StreamState(w);
+        BlockStreamer streamer = new BlockStreamer(s, w, System.out);
         AgentLoop.EventSink sink = e -> {
             if (e instanceof AgentEvent.TurnStart) {
                 turns[0]++;
-                streamState.reset();
+                streamer.reset();
                 String rendered = EventRenderer.render(e, s, w);
                 if (rendered == null || rendered.isEmpty()) return;
                 System.out.println(rendered);
                 return;
             } else if (e instanceof AgentEvent.StreamDelta sd) {
-                String rendered = EventRenderer.render(sd, s, w, streamState);
-                if (rendered == null || rendered.isEmpty()) return;
-                System.out.print(rendered);
-                System.out.flush();
+                streamer.delta(sd.delta());
                 return;
             } else if (e instanceof AgentEvent.MessageEnd me) {
-                String rendered = EventRenderer.render(me, s, w, streamState);
-                if (rendered == null || rendered.isEmpty()) return;
-                System.out.println(rendered);
+                streamer.flush("aborted".equals(me.message().stopReason));
                 return;
             } else if (e instanceof AgentEvent.AgentEnd ae) {
                 Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-                String rendered = EventRenderer.render(ae, s, TurnStats.of(elapsed, turns[0], toolCalls[0]), w, streamState);
+                String rendered = EventRenderer.render(ae, s, TurnStats.of(elapsed, turns[0], toolCalls[0]), w);
                 if (rendered == null || rendered.isEmpty()) return;
                 System.out.println(rendered);
                 return;
@@ -608,121 +598,11 @@ public class Main {
     }
 
     /**
-     * 事件打印：统一经事件渲染器出字（交互与管道两模式共用）。
-     * StreamDelta 直出到 stdout 并 flush，保证逐字可见；其他事件走 println。
+     * 事件打印：统一经事件渲染器出字。流式增量由 BlockStreamer 在交互路径处理，不经此入口。
      */
     private static void printEvent(AgentEvent e) {
         Style style = Style.detect(System.getenv(), System.console() != null);
-        if (e instanceof AgentEvent.StreamDelta sd) {
-            String rendered = EventRenderer.render(sd, style, AnsiTextUtil.DEFAULT_WIDTH, null);
-            if (rendered == null || rendered.isEmpty()) return;
-            System.out.print(rendered);
-            System.out.flush();
-            return;
-        }
         String rendered = EventRenderer.render(e, style);
-        if (rendered == null || rendered.isEmpty()) return;
-        System.out.println(rendered);
-    }
-
-    /**
-     * 供单测与未来耗时注入使用的显式样式入口（包可见）。
-     */
-    static void printEvent(AgentEvent e, Style style) {
-        if (e instanceof AgentEvent.StreamDelta sd) {
-            String rendered = EventRenderer.render(sd, style, AnsiTextUtil.DEFAULT_WIDTH, null);
-            if (rendered == null || rendered.isEmpty()) return;
-            System.out.print(rendered);
-            System.out.flush();
-            return;
-        }
-        String rendered = EventRenderer.render(e, style);
-        if (rendered == null || rendered.isEmpty()) return;
-        System.out.println(rendered);
-    }
-
-    /**
-     * 供单测使用的带耗时与计数注入入口（包可见，03 轮末统计——收敛为 TurnStats）。
-     */
-    static void printEvent(AgentEvent e, Style style, Duration elapsed, int turns, int toolCalls) {
-        if (e instanceof AgentEvent.StreamDelta sd) {
-            String rendered = EventRenderer.render(sd, style, AnsiTextUtil.DEFAULT_WIDTH, null);
-            if (rendered == null || rendered.isEmpty()) return;
-            System.out.print(rendered);
-            System.out.flush();
-            return;
-        }
-        String rendered = EventRenderer.render(e, style, TurnStats.of(elapsed, turns, toolCalls));
-        if (rendered == null || rendered.isEmpty()) return;
-        System.out.println(rendered);
-    }
-
-    /**
-     * 供单测使用的 TurnStats 入口（包可见）。
-     */
-    static void printEvent(AgentEvent e, Style style, TurnStats stats) {
-        if (e instanceof AgentEvent.StreamDelta sd) {
-            String rendered = EventRenderer.render(sd, style, AnsiTextUtil.DEFAULT_WIDTH, null);
-            if (rendered == null || rendered.isEmpty()) return;
-            System.out.print(rendered);
-            System.out.flush();
-            return;
-        }
-        String rendered = EventRenderer.render(e, style, stats);
-        if (rendered == null || rendered.isEmpty()) return;
-        System.out.println(rendered);
-    }
-
-    /**
-     * 流式感知的打印入口（供测试与交互路径直接注入 StreamState）。
-     * StreamDelta 直出（首片段含 CUU1+EL），MessageEnd 含重绘（CUU N+ED），且 flush 保证逐字可见；
-     * 管道模式下 state 为 null 时不产生控制序列。
-     */
-    static void printEvent(AgentEvent e, Style style, int width, StreamState state) {
-        if (e instanceof AgentEvent.StreamDelta sd) {
-            String rendered = EventRenderer.render(sd, style, width, state);
-            if (rendered == null || rendered.isEmpty()) return;
-            System.out.print(rendered);
-            System.out.flush();
-            return;
-        } else if (e instanceof AgentEvent.MessageEnd me) {
-            String rendered = EventRenderer.render(me, style, width, state);
-            if (rendered == null || rendered.isEmpty()) return;
-            System.out.println(rendered);
-            return;
-        } else if (e instanceof AgentEvent.AgentEnd ae) {
-            String rendered = EventRenderer.render(ae, style, TurnStats.inferred(null), width, state);
-            if (rendered == null || rendered.isEmpty()) return;
-            System.out.println(rendered);
-            return;
-        }
-        String rendered = EventRenderer.render(e, style, width);
-        if (rendered == null || rendered.isEmpty()) return;
-        System.out.println(rendered);
-    }
-
-    /**
-     * 流式感知的打印入口（带 TurnStats）。
-     */
-    static void printEvent(AgentEvent e, Style style, TurnStats stats, int width, StreamState state) {
-        if (e instanceof AgentEvent.StreamDelta sd) {
-            String rendered = EventRenderer.render(sd, style, width, state);
-            if (rendered == null || rendered.isEmpty()) return;
-            System.out.print(rendered);
-            System.out.flush();
-            return;
-        } else if (e instanceof AgentEvent.MessageEnd me) {
-            String rendered = EventRenderer.render(me, style, stats, width, state);
-            if (rendered == null || rendered.isEmpty()) return;
-            System.out.println(rendered);
-            return;
-        } else if (e instanceof AgentEvent.AgentEnd ae) {
-            String rendered = EventRenderer.render(ae, style, stats, width, state);
-            if (rendered == null || rendered.isEmpty()) return;
-            System.out.println(rendered);
-            return;
-        }
-        String rendered = EventRenderer.render(e, style, stats, width);
         if (rendered == null || rendered.isEmpty()) return;
         System.out.println(rendered);
     }

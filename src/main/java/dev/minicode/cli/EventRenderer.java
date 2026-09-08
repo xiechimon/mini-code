@@ -169,57 +169,10 @@ public final class EventRenderer {
      * 交互式路径必须传非 null 的 StreamState，否则首片段占位行未被覆盖。
      * </p>
      */
-    public static String render(AgentEvent.StreamDelta e, Style style, int width, StreamState state) {
-        if (e == null || e.delta() == null || e.delta().isEmpty()) return "";
-        String delta = e.delta();
-        if (state == null) return delta;
-        boolean isFirst = !state.hasStreamed();
-        String prefix = "";
-        if (isFirst) {
-            // CUU 不改列：先上移到占位行再 \r 回列 0，否则流式文本从「思考中」的列位置起步，整块右移
-            prefix = Style.cursorUp(1) + "\r" + Style.ERASE_LINE;
-        }
-        state.append(delta);
-        return prefix + delta;
-    }
-
-    /**
-     * 流式感知的 MessageEnd 渲染：若本轮已有流式输出，先输出「光标上移 N 行+清除到底部 ESC[J」再输出 Markdown 渲染版；
-     * 无流式输出时保持现状不加重绘序列。aborted 终态追加「⏹ 已中断」标记。
-     * 重绘仅在 state 非 null 且 hasStreamed 时生效，保证管道/非流式无控制序列。
-     */
-    public static String render(AgentEvent.MessageEnd e, Style style, int width, StreamState state) {
-        return render(e, style, TurnStats.inferred(null), width, state);
-    }
-
-    /**
-     * 流式感知的 MessageEnd 渲染（带 TurnStats，复用以避免重复构造）。
-     */
-    public static String render(AgentEvent.MessageEnd e, Style style, TurnStats stats, int width, StreamState state) {
-        if (e == null || e.message() == null) return "";
-        Message msg = e.message();
-        if (msg.role != Message.Role.assistant) return "";
-        // 复用非流式正文构建 + aborted 标记
-        String body = buildMessageBody(msg, style, width);
-        if (body.isEmpty()) return "";
-        if (state != null && state.hasStreamed()) {
-            // CUU 不改列：重绘前必须 \r 回列 0；上移行数取决于游标在块末行（无尾随换行）还是下一行行首（有尾随换行）
-            boolean trailingNewline = state.buffer().endsWith("\n");
-            int up = Math.max(0, state.rows() - (trailingNewline ? 0 : 1));
-            String prefix = "\r" + Style.cursorUp(up) + Style.ERASE_DOWN;
-            return prefix + body;
-        }
-        return body;
-    }
-
     /**
      * 流式感知的 AgentEnd 渲染：复用既有统计逻辑，aborted 时追加标记。
      * AgentEnd 本身不涉及重绘（重绘已在 MessageEnd 完成），此处仅复用统计渲染（已含 aborted 标记），不重复追加。
      */
-    public static String render(AgentEvent.AgentEnd e, Style style, TurnStats stats, int width, StreamState state) {
-        return render((AgentEvent) e, style, stats, width);
-    }
-
     private static String buildMessageBody(Message msg, Style style, int width) {
         int w = AnsiTextUtil.normalizeWidth(width);
         if (style == null) style = Style.PLAIN;
@@ -277,11 +230,7 @@ public final class EventRenderer {
         if (stats == null) stats = TurnStats.inferred(null);
         width = AnsiTextUtil.normalizeWidth(width);
 
-        if (event instanceof AgentEvent.StreamDelta) {
-            // 管道专用直出已迁移至 render(StreamDelta, Style, int, StreamState=null)，此处不再处理
-            // 以防非管道误用导致首片段未覆盖占位行（交互式必须走带 StreamState 的重载）
-            return "";
-        } else if (event instanceof AgentEvent.TurnStart t) {
+        if (event instanceof AgentEvent.TurnStart t) {
             String text = "\n[第 " + t.turn() + " 轮] 思考中...";
             return maybeColor(text, Style.ANSI_GRAY, style);
         } else if (event instanceof AgentEvent.MessageEnd m) {
