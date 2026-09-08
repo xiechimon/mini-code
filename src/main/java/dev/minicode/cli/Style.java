@@ -34,6 +34,12 @@ public record Style(boolean colorEnabled) {
     public static final String ANSI_BOLD = "\u001B[1m";
     /** ANSI：暗灰（用于横幅其余部分，与 ANSI_GRAY 同值语义一致） */
     public static final String ANSI_DIM = "\u001B[90m";
+    /** ANSI：斜体（用于斜体渲染） */
+    public static final String ANSI_ITALIC = "\u001B[3m";
+    /** ANSI：下划线（用于链接文本） */
+    public static final String ANSI_UNDERLINE = "\u001B[4m";
+    /** ANSI：删除线（用于删除线渲染） */
+    public static final String ANSI_STRIKETHROUGH = "\u001B[9m";
     // 便捷别名（对应任务描述 Style.CYAN/RESET 等）
     /** @see #ANSI_RESET */ public static final String RESET = ANSI_RESET;
     /** @see #ANSI_CYAN */ public static final String CYAN = ANSI_CYAN;
