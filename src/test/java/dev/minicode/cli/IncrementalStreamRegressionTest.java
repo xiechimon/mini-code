@@ -9,16 +9,14 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 诊断探针（throwaway）：把「流式增量应当直接上屏」固化为断言，用于证明当前
- * 块级流式渲染在流式期间只出计数器、不出正文——即用户所述「治标不治本，想要流式效果」。
+ * 回归测试：流式增量应在到达时立即可见（「行级流式」取代「块级计数器」的钉）。
  * <p>
- * 流式增量（StreamDelta）语义：模型逐片段返回文本，理应在到达时立即可见。
- * 当前 BlockStreamer 把增量压进块缓冲、单行进度指示「▌ 已生成 N 字」原位刷新，
- * 只有等块完成（空行/围栏闭合/终态 flush）才一次性打印渲染正文。
- * 本探针在子块完成前切一刀，断言增量文本已上屏——真实实现应通过，当前实现应失败。
+ * 演进历史：块级流式把增量压进块缓冲、只显示单行进度指示「▌ 已生成 N 字」，块完成才整块倾销，
+ * 用户看不到回复在流动（"治标不治本"）。行级流式承诺正文随增量可见增长。本测试在子块完成前
+ * 切一刀，断言增量文本已上屏且不退化回计数器。先前在块级实现上为红，行级实现落地后转绿。
  * </p>
  */
-class StreamIncrementalProbeTest {
+class IncrementalStreamRegressionTest {
 
     private ByteArrayOutputStream captured;
     private PrintStream out;

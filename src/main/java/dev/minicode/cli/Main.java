@@ -315,7 +315,8 @@ public class Main {
                 break;
             }
             int renderWidth = terminalWidth(terminal);
-            runReplTurn(line, history, loop, style, renderWidth);
+            int renderHeight = terminalHeight(terminal);
+            runReplTurn(line, history, loop, style, renderWidth, renderHeight);
             // 增量历史已自动落盘，此处显式 save 兜底，确保 @TempDir 测试中文件可见
             try {
                 reader.getHistory().save();
@@ -379,6 +380,7 @@ public class Main {
         Style style = Style.detect(System.getenv(), true);
         String promptStr = prompt(style);
         int width = resolveWidth(null);
+        int height = resolveViewportRows();
         while (true) {
             System.out.print(promptStr);
             System.out.flush();
@@ -392,7 +394,7 @@ public class Main {
                 break;
             }
             // 降级输入也走流式路径，与 JLine 交互同款（SIGINT 由 loop 的 triggerSupplier 接管）
-            runReplTurn(line, history, loop, style, width);
+            runReplTurn(line, history, loop, style, width, height);
         }
     }
 
@@ -446,7 +448,7 @@ public class Main {
         if (isTty) {
             java.util.function.Supplier<InterruptTrigger> triggerSupplier = () -> new SigIntInterruptTrigger();
             AgentLoop loop = new AgentLoop(llm, model, buildSystemPrompt(workdir), tools, 20, triggerSupplier);
-            BlockStreamer streamer = new BlockStreamer(renderStyle, renderWidth, System.out);
+            BlockStreamer streamer = new BlockStreamer(renderStyle, renderWidth, resolveViewportRows(), System.out);
             AgentLoop.EventSink sink = e -> {
                 if (e instanceof AgentEvent.TurnStart) {
                     turns[0]++;
@@ -552,7 +554,7 @@ public class Main {
      * 保证 Ctrl-C 仅取消本轮生成而不退进程，且结束后恢复 JLine 的弃行语义。
      * </p>
      */
-    static void runReplTurn(String prompt, List<Message> history, AgentLoop loop, Style style, int width) throws Exception {
+    static void runReplTurn(String prompt, List<Message> history, AgentLoop loop, Style style, int width, int viewportRows) throws Exception {
         if (style == null) style = Style.PLAIN;
         width = AnsiTextUtil.normalizeWidth(width);
         long startNanos = System.nanoTime();
@@ -560,7 +562,7 @@ public class Main {
         int[] toolCalls = {0};
         Style s = style;
         int w = width;
-        BlockStreamer streamer = new BlockStreamer(s, w, System.out);
+        BlockStreamer streamer = new BlockStreamer(s, w, viewportRows, System.out);
         AgentLoop.EventSink sink = e -> {
             if (e instanceof AgentEvent.TurnStart) {
                 turns[0]++;
@@ -640,6 +642,30 @@ public class Main {
             }
         }
         return AnsiTextUtil.DEFAULT_WIDTH;
+    }
+
+    /** 终端高度：交互取终端高度，非法/零回退无上限（Integer.MAX_VALUE，即不启用视图外 cap）。 */
+    static int terminalHeight(Terminal terminal) {
+        if (terminal != null) {
+            try {
+                int h = terminal.getHeight();
+                if (h > 0) return h;
+            } catch (Exception ignored) {
+            }
+        }
+        return Integer.MAX_VALUE;
+    }
+
+    /** 单次 / 管道路径的视口高度解析：有终端取高度，否则无上限（不启用 cap）。 */
+    static int resolveViewportRows() {
+        boolean isTty = System.console() != null;
+        if (!isTty) return Integer.MAX_VALUE;
+        try (Terminal t = TerminalBuilder.builder().system(true).build()) {
+            int h = t.getHeight();
+            if (h > 0) return h;
+        } catch (Exception ignored) {
+        }
+        return Integer.MAX_VALUE;
     }
 
     /**
