@@ -241,4 +241,61 @@ class BlockStreamingResidueTest {
         }
         return out;
     }
+
+    /** 统计屏幕行内包含某子串的行数（CJK 空格剥离后）。 */
+    private static long countLines(String flat, String needle) {
+        return Arrays.stream(flat.split("\n")).filter(l -> l.contains(needle)).count();
+    }
+
+    @Test
+    void tableSealsOnCloseNoDuplicate() {
+        TermSim sim = new TermSim(COLS);
+        Style style = Style.PLAIN;
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        BlockStreamer streamer = new BlockStreamer(style, COLS,
+                new PrintStream(captured, true, StandardCharsets.UTF_8));
+        sim.print(EventRenderer.render(new AgentEvent.TurnStart(1), style, COLS) + "\n");
+
+        String table = "| Name | Age |\n|------|-----|\n| Alice | 30 |\n| Bob | 25 |\n";
+        for (String d : splitFragments(table, 5)) {
+            streamer.delta(d);
+            sim.print(captured.toString(StandardCharsets.UTF_8));
+            captured.reset();
+        }
+        streamer.flush(false);
+        sim.print(captured.toString(StandardCharsets.UTF_8) + "\n");
+        captured.reset();
+
+        String flat = sim.screen().replace("\r", "").replace(" ", "");
+        // 结构性表格整体闭合才成表：表头/数据行各恰一次，不因开放期碎片累积而重复
+        assertEquals(1, countLines(flat, "Name"), "表头应恰一次\n" + sim.screen());
+        assertEquals(1, countLines(flat, "Alice"), "数据行应恰一次\n" + sim.screen());
+        assertEquals(1, countLines(flat, "Bob"), "数据行应恰一次\n" + sim.screen());
+    }
+
+    @Test
+    void indentedCodeSealsOnCloseNoDuplicate() {
+        TermSim sim = new TermSim(COLS);
+        Style style = Style.PLAIN;
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        BlockStreamer streamer = new BlockStreamer(style, COLS,
+                new PrintStream(captured, true, StandardCharsets.UTF_8));
+        sim.print(EventRenderer.render(new AgentEvent.TurnStart(1), style, COLS) + "\n");
+
+        String code = "    int a = 1;\n    int b = 2;\n";
+        for (String d : splitFragments(code, 4)) {
+            streamer.delta(d);
+            sim.print(captured.toString(StandardCharsets.UTF_8));
+            captured.reset();
+        }
+        streamer.flush(false);
+        sim.print(captured.toString(StandardCharsets.UTF_8) + "\n");
+        captured.reset();
+
+        String flat = sim.screen().replace("\r", "").replace(" ", "");
+        // 缩进代码作为结构性块：开放期不碎片重绘，闭合后整块成盒且无重复
+        assertEquals(1, countLines(flat, "inta=1;"), "代码行应恰一次\n" + sim.screen());
+        assertFalse(flat.contains("inta=1;inta=1;"), "不应重复\n" + sim.screen());
+    }
 }
+

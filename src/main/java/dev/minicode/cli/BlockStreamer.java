@@ -119,9 +119,9 @@ public final class BlockStreamer {
         return true;
     }
 
-    /** 原位重绘当前开放块：回本块首行 + 清到底 + 重打印渲染版。打开中的围栏不重绘（闭合成盒）。 */
+    /** 原位重绘当前开放块：回本块首行 + 清到底 + 重打印渲染版。结构性块（围栏/缩进代码/表格）不重绘，闭合才成盒/成表。 */
     private void redrawOpenBlock() {
-        if (insideFence(block.toString())) {              // 未闭合围栏：结构性块，闭合成盒（02 细化）
+        if (isStructuralBlock(block.toString())) {        // 结构性块开放期不逐字重绘
             openRows = 0;
             return;
         }
@@ -194,12 +194,27 @@ public final class BlockStreamer {
         return Math.min(seal, buf.length());
     }
 
-    /** 缓冲是否处于未闭合的围栏内（代码块内允许空行，需等闭合围栏）。 */
-    private static boolean insideFence(String buf) {
-        boolean in = false;
-        for (String line : buf.split("\n", -1)) {
-            if (line.stripLeading().startsWith("```")) in = !in;
+    /**
+     * 当前缓冲是否为「结构性块」开放期——整形容器（代码围栏/缩进代码/GFM 表格），
+     * 其渲染只在完整闭合时有意义，故开放期不逐字重绘，待闭合/空行定稿成盒成表。
+     */
+    private static boolean isStructuralBlock(String buf) {
+        String body = buf.stripLeading();
+        if (body.isEmpty()) return false;
+        String firstLine = (body.indexOf('\n') >= 0 ? body.substring(0, body.indexOf('\n')) : body).trim();
+        if (firstLine.startsWith("```")) return true;                     // 围栏代码
+        if (firstLine.startsWith("    ") || firstLine.startsWith("\t")) return true; // 缩进代码
+        return isTableShape(body);                                         // GFM 表格
+    }
+
+    /** 是否是 GFM 表格形状：某行含 | 且其后紧跟 ---/=== 分隔行（可选 : 对齐标记）。 */
+    private static boolean isTableShape(String body) {
+        String[] lines = body.split("\n", -1);
+        for (int i = 0; i + 1 < lines.length; i++) {
+            if (!lines[i].contains("|")) continue;
+            String next = lines[i + 1].trim();
+            if (next.matches("\\|?\\s*:?-{2,}:?\\s*(\\|\\s*:?-{2,}:?\\s*)*\\|?")) return true;
         }
-        return in;
+        return false;
     }
 }
