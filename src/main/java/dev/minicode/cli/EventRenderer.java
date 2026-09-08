@@ -35,6 +35,9 @@ public final class EventRenderer {
     /** 分隔符 */
     private static final String DOT = " · ";
 
+    /** 中断标记 */
+    private static final String ABORTED_MARK = "⏹ 已中断";
+
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private EventRenderer() {
@@ -155,6 +158,104 @@ public final class EventRenderer {
         return render(event, style, stats, AnsiTextUtil.DEFAULT_WIDTH);
     }
 
+    // ——— 流式重绘与中断（04 票）———
+
+    /**
+     * 流式增量渲染：原样直出 + 宽度感知行数记账，首个片段覆盖「思考中」占位行。
+     * <p>
+     * 保持渲染器纯函数缝不破坏：状态由调用方持有（Main 的 StreamState），此处仅更新并返回带 CUU 的文本。
+     * 首个 StreamDelta 到达时前置「光标上移 1 行+清行」({@code \u001B[1A\u001B[2K}) 覆盖 TurnStart 占位行；
+     * 后续片段直接原样直出。非流式/去色路径下 state 为 null 时仅原样返回 delta。
+     * </p>
+     */
+    public static String render(AgentEvent.StreamDelta e, Style style, int width, StreamState state) {
+        if (e == null || e.delta() == null || e.delta().isEmpty()) return "";
+        String delta = e.delta();
+        if (state == null) return delta;
+        boolean isFirst = !state.hasStreamed();
+        String prefix = "";
+        if (isFirst) {
+            prefix = Style.cursorUp(1) + Style.ERASE_LINE;
+        }
+        state.append(delta);
+        return prefix + delta;
+    }
+
+    /**
+     * 流式感知的 MessageEnd 渲染：若本轮已有流式输出，先输出「光标上移 N 行+清除到底部 ESC[J」再输出 Markdown 渲染版；
+     * 无流式输出时保持现状不加重绘序列。aborted 终态追加「⏹ 已中断」标记。
+     * 重绘仅在 state 非 null 且 hasStreamed 时生效，保证管道/非流式无控制序列。
+     */
+    public static String render(AgentEvent.MessageEnd e, Style style, int width, StreamState state) {
+        return render(e, style, TurnStats.inferred(null), width, state);
+    }
+
+    /**
+     * 流式感知的 MessageEnd 渲染（带 TurnStats，复用以避免重复构造）。
+     */
+    public static String render(AgentEvent.MessageEnd e, Style style, TurnStats stats, int width, StreamState state) {
+        if (e == null || e.message() == null) return "";
+        Message msg = e.message();
+        if (msg.role != Message.Role.assistant) return "";
+        // 复用非流式正文构建 + aborted 标记
+        String body = buildMessageBody(msg, style, width);
+        if (body.isEmpty()) return "";
+        if (state != null && state.hasStreamed()) {
+            int rows = state.rows();
+            if (rows > 0) {
+                String prefix = Style.cursorUp(rows) + Style.ERASE_DOWN;
+                return prefix + body;
+            }
+        }
+        return body;
+    }
+
+    /**
+     * 流式感知的 AgentEnd 渲染：复用既有统计逻辑，aborted 时追加标记。
+     * AgentEnd 本身不涉及重绘（重绘已在 MessageEnd 完成），此处仅复用统计渲染（已含 aborted 标记），不重复追加。
+     */
+    public static String render(AgentEvent.AgentEnd e, Style style, TurnStats stats, int width, StreamState state) {
+        return render((AgentEvent) e, style, stats, width);
+    }
+
+    private static String buildMessageBody(Message msg, Style style, int width) {
+        int w = AnsiTextUtil.normalizeWidth(width);
+        if (style == null) style = Style.PLAIN;
+        StringBuilder sb = new StringBuilder();
+        String txt = msg.text();
+        boolean hasText = txt != null && !txt.isBlank();
+        if (hasText) {
+            String renderedBody = MarkdownRenderer.render(txt, style, w);
+            if (renderedBody != null && !renderedBody.isEmpty()) {
+                sb.append(renderedBody);
+            } else {
+                sb.append(txt);
+            }
+        }
+        for (Message.ToolCall tc : msg.toolCalls()) {
+            if (sb.length() > 0) sb.append("\n");
+            String summary = summarize(tc);
+            String namePart = maybeColor(tc.name, Style.ANSI_CYAN, style);
+            String line;
+            if (summary == null || summary.isEmpty()) {
+                line = "→ " + namePart;
+            } else {
+                String paramPart = maybeColor(summary, Style.ANSI_GRAY, style);
+                line = "→ " + namePart + " " + paramPart;
+            }
+            sb.append(line);
+        }
+        boolean isAborted = "aborted".equals(msg.stopReason);
+        if (isAborted) {
+            String mark = style.colorEnabled() ? Style.ANSI_GRAY + ABORTED_MARK + Style.ANSI_RESET : ABORTED_MARK;
+            if (sb.length() > 0) sb.append(" ").append(mark);
+            else sb.append(mark);
+        }
+        // 空且非 aborted 时按旧逻辑返回空
+        if (sb.isEmpty()) return "";
+        return sb.toString();
+    }
+
     /**
      * 纯函数渲染入口（收敛 Data Clumps + 宽度注入）。
      * <p>
@@ -174,7 +275,11 @@ public final class EventRenderer {
         if (stats == null) stats = TurnStats.inferred(null);
         width = AnsiTextUtil.normalizeWidth(width);
 
-        if (event instanceof AgentEvent.TurnStart t) {
+        if (event instanceof AgentEvent.StreamDelta sd) {
+            // 非流式/管道路径的直出——无状态时仅原样返回 delta，不含控制序列，保证管道无 CUU
+            if (sd.delta() == null || sd.delta().isEmpty()) return "";
+            return sd.delta();
+        } else if (event instanceof AgentEvent.TurnStart t) {
             String text = "\n[第 " + t.turn() + " 轮] 思考中...";
             return maybeColor(text, Style.ANSI_GRAY, style);
         } else if (event instanceof AgentEvent.MessageEnd m) {
@@ -182,34 +287,9 @@ public final class EventRenderer {
             if (msg.role != Message.Role.assistant) {
                 return "";
             }
-            StringBuilder sb = new StringBuilder();
-            String txt = msg.text();
-            boolean hasText = txt != null && !txt.isBlank();
-            if (hasText) {
-                // 正文经 Markdown 渲染管线（纯函数，样式与宽度注入）
-                String renderedBody = MarkdownRenderer.render(txt, style, width);
-                if (renderedBody != null && !renderedBody.isEmpty()) {
-                    sb.append(renderedBody);
-                } else {
-                    sb.append(txt);
-                }
-            }
-            for (Message.ToolCall tc : msg.toolCalls()) {
-                if (sb.length() > 0) sb.append("\n");
-                String summary = summarize(tc);
-                // 工具名青、参数暗灰（ANSI 常量收敛至 Style）
-                String namePart = maybeColor(tc.name, Style.ANSI_CYAN, style);
-                String line;
-                if (summary == null || summary.isEmpty()) {
-                    line = "→ " + namePart;
-                } else {
-                    String paramPart = maybeColor(summary, Style.ANSI_GRAY, style);
-                    line = "→ " + namePart + " " + paramPart;
-                }
-                sb.append(line);
-            }
-            if (sb.isEmpty()) return "";
-            return sb.toString();
+            String body = buildMessageBody(msg, style, width);
+            if (body.isEmpty()) return "";
+            return body;
         } else if (event instanceof AgentEvent.ToolResultEvent tr) {
             return renderToolResult(tr, style);
         } else if (event instanceof AgentEvent.AgentEnd ae) {
@@ -218,16 +298,25 @@ public final class EventRenderer {
             int effTurns = stats.inferTurns() ? inferTurns(ae) : stats.turns();
             int effTools = stats.inferTools() ? inferToolCalls(ae) : stats.toolCalls();
             String elapsedStr = formatElapsed(stats.elapsedOrZero());
+            String base;
             if (!style.colorEnabled()) {
                 String plainStats = effTurns + " 轮" + DOT + effTools + " 次工具" + DOT + elapsedStr;
-                return "\n" + plainStats;
+                base = "\n" + plainStats;
+            } else {
+                // 有色：N 轮（暗灰）· M 次工具（绿）· 耗时（暗灰），分隔符随相邻段保持暗灰
+                String turnsPart = maybeColor(effTurns + " 轮", Style.ANSI_GRAY, style);
+                String toolsPart = maybeColor(effTools + " 次工具", Style.ANSI_GREEN, style);
+                String elapsedPart = maybeColor(elapsedStr, Style.ANSI_GRAY, style);
+                String dotGray = maybeColor(DOT, Style.ANSI_GRAY, style);
+                base = "\n" + turnsPart + dotGray + toolsPart + dotGray + elapsedPart;
             }
-            // 有色：N 轮（暗灰）· M 次工具（绿）· 耗时（暗灰），分隔符随相邻段保持暗灰
-            String turnsPart = maybeColor(effTurns + " 轮", Style.ANSI_GRAY, style);
-            String toolsPart = maybeColor(effTools + " 次工具", Style.ANSI_GREEN, style);
-            String elapsedPart = maybeColor(elapsedStr, Style.ANSI_GRAY, style);
-            String dotGray = maybeColor(DOT, Style.ANSI_GRAY, style);
-            return "\n" + turnsPart + dotGray + toolsPart + dotGray + elapsedPart;
+            boolean hasAborted = ae.messages() != null && ae.messages().stream()
+                    .anyMatch(mm -> mm.role == Message.Role.assistant && "aborted".equals(mm.stopReason));
+            if (hasAborted) {
+                String mark = style.colorEnabled() ? Style.ANSI_GRAY + ABORTED_MARK + Style.ANSI_RESET : ABORTED_MARK;
+                return base + " " + mark;
+            }
+            return base;
         } else if (event instanceof AgentEvent.ToolStart) {
             return "";
         } else if (event instanceof AgentEvent.TurnEnd) {
