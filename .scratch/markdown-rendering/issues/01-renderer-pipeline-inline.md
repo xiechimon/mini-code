@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] commonmark + ext-gfm-tables 依赖引入，零传递依赖（ADR-0001 落地）
 - [x] 正文渲染器为纯函数：不读环境、不碰时钟（样式与宽度均注入）

@@ -4,7 +4,7 @@
 
 **Blocked by:** 01（真实网关流式 spike + SSE 解析器）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] default stream() 委派同步方法，既有 fake 测试零改动
 - [x] 流式实现：片段逐次回调、返回完整 Message（文本累积 + 工具调用 id/名称/参数分片拼装）

@@ -4,7 +4,7 @@
 
 **Blocked by:** 01（正文渲染管线贯通）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 表格两态断言：列对齐/表头粗体/分隔线暗灰
 - [x] 列宽压缩：内容超宽按比例压缩仍保持对齐

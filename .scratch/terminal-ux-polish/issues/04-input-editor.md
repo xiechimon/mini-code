@@ -4,7 +4,7 @@
 
 **Blocked by:** 01（事件渲染抽离与降级接线，需其样式探测供 ❯ 着色）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 历史持久化测试：注入临时目录路径，写入后新 reader 可翻到（@TempDir 先例）
 - [x] 反斜杠续行测试：两行拼接为一次提交

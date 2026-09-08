@@ -1,6 +1,6 @@
 # Spec: True Line-Level Streaming Render（取代块级流式计数器）
 
-Status: ready-for-agent
+Status: resolved
 
 ## Problem Statement
 

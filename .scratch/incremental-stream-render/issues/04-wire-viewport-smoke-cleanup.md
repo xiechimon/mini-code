@@ -4,11 +4,11 @@
 
 **Blocked by:** 02, 03（需 seal-only 与 cap 齐备后做全链路集成与冒烟）。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] 交互与 one-shot tty 路径把终端高度注入渲染组件（供 cap 用）
-- [ ] 真实网关 tty 冒烟：段落可见增长、Ctrl-C 中断保留 partial + 追加中断标记、进程不退出、长代码闭合成盒
-- [ ] 管道（非 tty）模式行为不变：零 StreamDelta、零光标控制序列
-- [ ] 抛掷原型已删除，无 `[DEBUG-*]` 残留
-- [ ] 全量 `mvn test` 绿；既有 residue 断言「无裸 markdown/无重复/无进度残留」保持绿
-- [ ] 既有 Markdown 渲染（代码盒/表格/标题/粗体/颜色/宽度注入）测试零回归
+- [x] 交互与 one-shot tty 路径把终端高度注入渲染组件（供 cap 用）
+- [x] 真实网关 tty 冒烟：段落可见增长、Ctrl-C 中断保留 partial + 追加中断标记、进程不退出、长代码闭合成盒
+- [x] 管道（非 tty）模式行为不变：零 StreamDelta、零光标控制序列
+- [x] 抛掷原型已删除，无 `[DEBUG-*]` 残留
+- [x] 全量 `mvn test` 绿；既有 residue 断言「无裸 markdown/无重复/无进度残留」保持绿
+- [x] 既有 Markdown 渲染（代码盒/表格/标题/粗体/颜色/宽度注入）测试零回归

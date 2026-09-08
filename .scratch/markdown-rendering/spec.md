@@ -1,6 +1,6 @@
 # Spec: Markdown 正文渲染
 
-Status: ready-for-agent
+Status: resolved
 
 ## Problem Statement
 

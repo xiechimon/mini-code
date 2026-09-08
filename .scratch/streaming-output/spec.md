@@ -1,6 +1,6 @@
 # Spec: 流式输出（等待反馈面落地）
 
-Status: ready-for-agent
+Status: resolved
 
 ## Problem Statement
 

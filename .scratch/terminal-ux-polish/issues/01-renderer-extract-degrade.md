@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 交互与管道两模式事件输出经同一渲染器，文案与现状等价（REPL 冒烟 + 现有测试不回归）
 - [x] 样式探测单测：NO_COLOR 非空 / 非 tty / TERM=dumb 三分支去色，默认 tty 有色

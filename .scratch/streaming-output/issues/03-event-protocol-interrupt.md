@@ -4,7 +4,7 @@
 
 **Blocked by:** 02（客户端流式与回退）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 流式增量事件入协议；既有事件族零回归
 - [x] AgentLoop 流式路径：增量×N → MessageEnd(final)，事件顺序可断言

@@ -4,7 +4,7 @@
 
 **Blocked by:** 03（事件协议与中断语义）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 流式增量直出+行数记账断言（EventRenderer 缝，宽度感知）
 - [x] MessageEnd 重绘控制序列断言（光标上移+清除+渲染版替换）

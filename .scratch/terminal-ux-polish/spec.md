@@ -1,6 +1,6 @@
 # Spec: 终端体验打磨（行式 REPL）
 
-Status: ready-for-agent
+Status: resolved
 
 ## Problem Statement
 

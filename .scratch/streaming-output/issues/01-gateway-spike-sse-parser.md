@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] spike 笔记落盘 `.scratch/streaming-output/`：各模型真实响应样例、工具调用 delta 形态、与解析器假设的差异点
 - [x] SSE 解析器纯函数：行序列 → 事件列表，不碰网络不碰 IO
