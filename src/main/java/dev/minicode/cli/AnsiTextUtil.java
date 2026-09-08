@@ -31,10 +31,21 @@ public final class AnsiTextUtil {
         return s.replaceAll("\u001B\\[[0-9;]*m", "");
     }
 
-    /** 可见显示宽度（剥离 ANSI 后）：CJK/全角/常见 emoji 计 2 列，其余 1 列。 */
+    /** 可见显示宽度（剥离 ANSI 后）：CJK/全角/常见 emoji 计 2 列，零宽字符计 0，其余 1 列。 */
     public static int visibleLength(String s) {
         if (s == null) return 0;
         return displayWidth(stripAnsi(s));
+    }
+
+    /**
+     * 清除文本中的终端控制字节：CSI/OSC 序列与残余裸 ESC。
+     * 模型正文不应携带终端控制字节——它们会以 ^[ 等形式漏到屏幕上。
+     */
+    public static String sanitizeTerminalControl(String s) {
+        if (s == null || s.isEmpty()) return s;
+        String t = s.replaceAll("\u001B\\[[0-9;:?<]*[A-Za-z]", "");            // CSI … 终止字母
+        t = t.replaceAll("\u001B\\][^\u0007\u001B]*(\u0007|\u001B\\\\)", ""); // OSC … BEL/ST
+        return t.replace("\u001B", "");                                          // 残余裸 ESC
     }
 
     /** 逐码点累加显示宽度。 */
@@ -53,7 +64,15 @@ public final class AnsiTextUtil {
      * 务实范围表而非完整 EAW——覆盖终端场景绝大多数字符。
      */
     static int charWidth(int cp) {
+        if (isZeroWidthCodePoint(cp)) return 0;
         return isWideCodePoint(cp) ? 2 : 1;
+    }
+
+    private static boolean isZeroWidthCodePoint(int cp) {
+        return (cp >= 0x0300 && cp <= 0x036F)      // 组合附加符
+                || (cp >= 0x200B && cp <= 0x200F)  // 零宽字符
+                || (cp >= 0xFE00 && cp <= 0xFE0F)  // 变体选择符（emoji 采光）
+                || (cp >= 0x20D0 && cp <= 0x20F0); // 组合符号
     }
 
     private static boolean isWideCodePoint(int cp) {

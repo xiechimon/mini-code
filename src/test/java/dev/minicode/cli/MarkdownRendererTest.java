@@ -1230,6 +1230,54 @@ class MarkdownRendererTest {
         }
     }
 
+    @Test
+    void sanitizeStripsStrayTerminalControlFromModelText() {
+        // 模型文本不应携带终端控制字节：裸 ESC/非 m 结尾 CSI/OSC 一律清除，只留纯文本
+        String[] cases = {
+                "\u001B代码库结构",
+                "## \u001B代码库结构",
+                "\u001B[2K代码库结构",
+                "\u001B]0;title\u0007## 代码库结构",
+                "## 代码库结构\u001B",
+        };
+        for (String md : cases) {
+            String out = MarkdownRenderer.render(md, plain, 80);
+            assertFalse(out.contains("\u001B"), "去色输出不应含任何 ESC: 输入=" + preview(md) + " 输出=" + show(out));
+            assertTrue(out.contains("代码库结构"), "净化不应误伤正文");
+            String colored = MarkdownRenderer.render(md, color, 80);
+            // 有色输出仅允许 Style 自身的 ESC[m 序列
+            for (int i = 0; i < colored.length(); i++) {
+                if (colored.charAt(i) == 0x1B) {
+                    assertTrue(i + 1 < colored.length() && colored.charAt(i + 1) == '[',
+                            "有色输出 ESC 后应紧跟 [，输入=" + preview(md));
+                }
+            }
+        }
+    }
+
+    @Test
+    void variationSelectorIsZeroWidthInCodeBox() {
+        // 🖥️ = U+1F5A5 + U+FE0F（变体选择符）：FE0F 应计 0 宽，否则盒右墙错位 1 列
+        String out = MarkdownRenderer.render("```\n│ ├── cli/   # 🖥️ 命令行界面\n```\n", plain, 80);
+        String[] lines = out.split("\n");
+        int top = dw(lines[0]);
+        assertEquals(top, dw(lines[1]), "内容行显示宽度应与顶线一致: [" + lines[1] + "] dw=" + dw(lines[1]));
+        assertEquals(top, dw(lines[2]), "底线显示宽度应与顶线一致");
+    }
+
+    private static String preview(String s) {
+        return s.replace("\u001B", "<ESC>").replace("\n", "\\n");
+    }
+
+    private static String show(String s) {
+        StringBuilder sb = new StringBuilder();
+        for (char c : s.toCharArray()) {
+            if (c == 0x1B) sb.append("<ESC>");
+            else sb.append(c);
+        }
+        return sb.toString();
+    }
+
     /**
      * 独立显示宽度 oracle：CJK/全角/常见 emoji 计 2 列，其余计 1。
      * 不依赖被测实现，用于对齐验证。
@@ -1239,10 +1287,17 @@ class MarkdownRendererTest {
         int w = 0;
         for (int i = 0; i < t.length(); ) {
             int cp = t.codePointAt(i);
-            w += isWideCp(cp) ? 2 : 1;
+            w += isZwCp(cp) ? 0 : isWideCp(cp) ? 2 : 1;
             i += Character.charCount(cp);
         }
         return w;
+    }
+
+    private static boolean isZwCp(int cp) {
+        return (cp >= 0x0300 && cp <= 0x036F)      // 组合附加符
+                || (cp >= 0x200B && cp <= 0x200F)  // 零宽字符
+                || (cp >= 0xFE00 && cp <= 0xFE0F)  // 变体选择符（emoji 采光）
+                || (cp >= 0x20D0 && cp <= 0x20F0); // 组合符号
     }
 
     private static boolean isWideCp(int cp) {

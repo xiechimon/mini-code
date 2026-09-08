@@ -46,6 +46,8 @@ public final class MarkdownRenderer {
     public static String render(String markdown, Style style, int width) {
         if (style == null) style = Style.PLAIN;
         if (markdown == null) return "";
+        // 净化模型文本中的终端控制字节（裸 ESC/CSI/OSC），防它们以 ^[ 等形式漏到屏幕
+        markdown = AnsiTextUtil.sanitizeTerminalControl(markdown);
         // 空白文本直接返回（避免解析产生空段落）
         if (markdown.isBlank()) return "";
         int w = AnsiTextUtil.normalizeWidth(width);
