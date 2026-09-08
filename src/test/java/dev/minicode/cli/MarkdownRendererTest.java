@@ -872,4 +872,266 @@ class MarkdownRendererTest {
         assertEquals(p, strip(c));
     }
 
+// ——— 表格：两态对齐与样式（票 03 核心） ———
+
+    @Test
+    void tableColoredAlignmentHeaderBoldSeparatorGrayAndInlineCodePreserved() {
+        String md = "| Name | Age |\n|------|-----|\n| Alice | 30 |\n| Bob | 25 |";
+        String plainOut = MarkdownRenderer.render(md, plain, 80);
+        String colorOut = MarkdownRenderer.render(md, color, 80);
+        // 去色与剥离一致，纯文本无 ANSI
+        assertFalse(plainOut.contains("\u001B["));
+        assertEquals(plainOut, strip(colorOut));
+        String[] plainLines = plainOut.split("\n");
+        String[] colorLines = colorOut.split("\n");
+        assertEquals(4, plainLines.length, "表应含表头+分隔线+2 数据行");
+        assertEquals(plainLines.length, colorLines.length);
+        // 列对齐：各行可见宽度一致
+        int expected = strip(plainLines[0]).length();
+        for (String line : plainLines) {
+            assertEquals(expected, strip(line).length(), "PLAIN 表各行可见宽度应一致，行: [" + strip(line) + "]");
+        }
+        for (String line : colorLines) {
+            assertEquals(expected, strip(line).length(), "COLOR 表各行可见宽度应一致，行: [" + strip(line) + "]");
+        }
+        // 表头粗体、分隔线暗灰
+        assertTrue(colorLines[0].contains(Style.ANSI_BOLD), "表头行应含 ANSI_BOLD");
+        assertTrue(colorLines[1].contains(Style.ANSI_GRAY), "分隔线行应含 ANSI_GRAY");
+        // 分隔线可见形态应为 -+- 拼接
+        assertTrue(strip(colorLines[1]).contains("-+-") || strip(colorLines[1]).contains("---"), "分隔线可见应含 ---");
+        assertTrue(strip(plainLines[1]).contains("-+-") || strip(plainLines[1]).contains("---"));
+        // 数据行不应串色：表头 BOLD 不应泄漏到数据行（除非数据行自身有样式）
+        // 此表数据行纯文本，数据行不应含 BOLD/GRAY（BOLD 仅表头，GRAY 仅分隔线）
+        assertFalse(colorLines[2].contains(Style.ANSI_BOLD), "纯文本数据行不应含 BOLD");
+        assertFalse(colorLines[2].contains(Style.ANSI_GRAY), "数据行不应含 GRAY");
+    }
+
+    @Test
+    void tablePlainSameAlignmentNoAnsi() {
+        String md = "| Name | Desc |\n|------|------|\n| foo | bar |\n| a | b |";
+        String plainOut = MarkdownRenderer.render(md, plain, 80);
+        assertFalse(plainOut.contains("\u001B["), "PLAIN 表不应含 ANSI");
+        String[] lines = plainOut.split("\n");
+        assertTrue(lines.length >= 3);
+        int w = strip(lines[0]).length();
+        for (String line : lines) {
+            assertEquals(w, strip(line).length(), "PLAIN 各行可见宽度一致");
+        }
+        // 有色剥离后与去色同宽同结构
+        String colorOut = MarkdownRenderer.render(md, color, 80);
+        assertEquals(plainOut, strip(colorOut));
+        // PLAIN 表头/分隔线仍对齐
+        assertTrue(strip(colorOut).split("\n")[1].contains("-+-"));
+    }
+
+    @Test
+    void tableInlineCodeGreenPreservedInDataRow() {
+        String md = "| Name | Desc |\n|------|------|\n| foo | `code` here |\n| bar | **bold** |";
+        String plainOut = MarkdownRenderer.render(md, plain, 80);
+        assertFalse(plainOut.contains("\u001B["));
+        assertTrue(plainOut.contains("code here"));
+        assertTrue(plainOut.contains("bold"));
+        String colorOut = MarkdownRenderer.render(md, color, 80);
+        assertEquals(plainOut, strip(colorOut));
+        String[] colorLines = colorOut.split("\n");
+        assertEquals(4, colorLines.length);
+        // 表头仍粗体、分隔线暗灰
+        assertTrue(colorLines[0].contains(Style.ANSI_BOLD));
+        assertTrue(colorLines[1].contains(Style.ANSI_GRAY));
+        // 数据行行内样式保留：含行内代码的单元格应含绿色，含粗体的应含粗体
+        assertTrue(colorLines[2].contains(Style.ANSI_GREEN), "数据行行内代码应保留绿色");
+        assertTrue(colorLines[2].contains("code"));
+        assertTrue(colorLines[3].contains(Style.ANSI_BOLD), "数据行粗体应保留 BOLD");
+        // 各行仍对齐
+        int expected = strip(colorLines[0]).length();
+        for (String l : colorLines) assertEquals(expected, strip(l).length());
+        for (String l : plainOut.split("\n")) assertEquals(expected, strip(l).length());
+    }
+
+    @Test
+    void tableCompressionProportionalStillAligned() {
+        String md = "| VeryLongHeaderName | AnotherVeryLongHeader |\n|--------------------|---------------------|\n| short | short |\n| a | b |";
+        // 80 宽不压缩，20/10 宽按比例压缩仍对齐
+        String plain80 = MarkdownRenderer.render(md, plain, 80);
+        String color80 = MarkdownRenderer.render(md, color, 80);
+        assertEquals(plain80, strip(color80));
+        int len80 = strip(plain80.split("\n")[0]).length();
+        assertTrue(len80 < 80, "超宽表在 80 下应未触及压缩，总宽应小于注入宽度");
+        for (String l : plain80.split("\n")) assertEquals(len80, strip(l).length());
+        for (String l : color80.split("\n")) assertEquals(len80, strip(l).length());
+        assertTrue(color80.split("\n")[0].contains(Style.ANSI_BOLD));
+        assertTrue(color80.split("\n")[1].contains(Style.ANSI_GRAY));
+
+        String plain20 = MarkdownRenderer.render(md, plain, 20);
+        String color20 = MarkdownRenderer.render(md, color, 20);
+        assertEquals(plain20, strip(color20));
+        String[] p20Lines = plain20.split("\n");
+        String[] c20Lines = color20.split("\n");
+        for (String l : p20Lines) assertEquals(20, strip(l).length(), "压缩后各行可见长度应等于注入宽度 20，行: [" + strip(l) + "]");
+        for (String l : c20Lines) assertEquals(20, strip(l).length());
+        assertTrue(c20Lines[0].contains(Style.ANSI_BOLD));
+        assertTrue(c20Lines[1].contains(Style.ANSI_GRAY));
+        // 20 宽可见长度应小于 80 宽，证明压缩生效
+        assertTrue(20 < len80);
+
+        String plain10 = MarkdownRenderer.render(md, plain, 10);
+        String color10 = MarkdownRenderer.render(md, color, 10);
+        assertEquals(plain10, strip(color10));
+        for (String l : plain10.split("\n")) assertEquals(10, strip(l).length());
+        for (String l : color10.split("\n")) assertEquals(10, strip(l).length());
+        assertTrue(color10.split("\n")[0].contains(Style.ANSI_BOLD));
+        assertTrue(color10.split("\n")[1].contains(Style.ANSI_GRAY));
+    }
+
+    @Test
+    void tableExtremeNarrowWidthTenStillAlignedAndStyled() {
+        String md = "| ColumnA | ColumnB | ColumnC |\n|---------|---------|---------|\n| aaaaa | bbbbb | ccccc |\n| 123 | 456 | 789 |";
+        String plain10 = MarkdownRenderer.render(md, plain, 10);
+        String color10 = MarkdownRenderer.render(md, color, 10);
+        // 不抛异常且产出非空
+        assertNotNull(plain10);
+        assertNotNull(color10);
+        assertFalse(plain10.isEmpty());
+        String[] pLines = plain10.split("\n");
+        String[] cLines = color10.split("\n");
+        assertEquals(pLines.length, cLines.length);
+        assertEquals(4, pLines.length);
+        int expected = strip(pLines[0]).length();
+        for (String l : pLines) assertEquals(expected, strip(l).length(), "极窄 10 宽各行仍对齐");
+        for (String l : cLines) assertEquals(expected, strip(l).length());
+        assertEquals(plain10, strip(color10));
+        // 即使极窄，表头仍粗体、分隔线仍暗灰
+        assertTrue(cLines[0].contains(Style.ANSI_BOLD), "极窄时表头仍应含 BOLD");
+        assertTrue(cLines[1].contains(Style.ANSI_GRAY), "极窄时分隔线仍应含 GRAY");
+        // PLAIN 无 ANSI
+        assertFalse(plain10.contains("\u001B["));
+    }
+
+    @Test
+    void tableSingleColumnBoundary() {
+        String md = "| Header |\n|--------|\n| row1 |\n| row2 |";
+        String plainOut = MarkdownRenderer.render(md, plain, 80);
+        String colorOut = MarkdownRenderer.render(md, color, 80);
+        assertFalse(plainOut.contains("\u001B["));
+        assertEquals(plainOut, strip(colorOut));
+        String[] pLines = plainOut.split("\n");
+        String[] cLines = colorOut.split("\n");
+        assertEquals(4, pLines.length);
+        int expected = strip(pLines[0]).length();
+        for (String l : pLines) assertEquals(expected, strip(l).length(), "单列各行可见宽度应一致");
+        for (String l : cLines) assertEquals(expected, strip(l).length());
+        assertTrue(cLines[0].contains(Style.ANSI_BOLD), "单列表头应含 BOLD");
+        assertTrue(cLines[1].contains(Style.ANSI_GRAY), "单列分隔线应含 GRAY");
+        // 单列不应含列分隔符 " | " 或 "-+-"（仅一列）
+        for (String l : pLines) {
+            assertFalse(strip(l).contains(" | "), "单列不应含列间分隔");
+            assertFalse(strip(l).contains("-+-"), "单列分隔线不应含 -+-");
+        }
+        // 极窄压缩：宽度 5 时单列仍对齐且不崩
+        String plain5 = MarkdownRenderer.render(md, plain, 5);
+        String color5 = MarkdownRenderer.render(md, color, 5);
+        assertEquals(plain5, strip(color5));
+        for (String l : plain5.split("\n")) assertEquals(strip(plain5.split("\n")[0]).length(), strip(l).length());
+        for (String l : color5.split("\n")) assertEquals(strip(color5.split("\n")[0]).length(), strip(l).length());
+        assertDoesNotThrow(() -> MarkdownRenderer.render(md, plain, 1));
+        assertDoesNotThrow(() -> MarkdownRenderer.render(md, color, 1));
+    }
+
+    @Test
+    void tableEmptyCellsBoundary() {
+        String md = "| A | B | C |\n|---|---|---|\n|  | x |  |\n| y |  | z |";
+        String plainOut = MarkdownRenderer.render(md, plain, 80);
+        String colorOut = MarkdownRenderer.render(md, color, 80);
+        assertNotNull(plainOut);
+        assertNotNull(colorOut);
+        assertFalse(plainOut.contains("\u001B["));
+        assertEquals(plainOut, strip(colorOut));
+        String[] pLines = plainOut.split("\n");
+        String[] cLines = colorOut.split("\n");
+        assertEquals(4, pLines.length);
+        int expected = strip(pLines[0]).length();
+        for (String l : pLines) assertEquals(expected, strip(l).length(), "空单元格表各行仍对齐");
+        for (String l : cLines) assertEquals(expected, strip(l).length());
+        assertTrue(cLines[0].contains(Style.ANSI_BOLD));
+        assertTrue(cLines[1].contains(Style.ANSI_GRAY));
+        // 空单元格应以空格填充，仍含列分隔对齐
+        assertTrue(strip(pLines[2]).contains(" | "));
+        assertTrue(strip(pLines[3]).contains(" | "));
+        // 极窄也不崩
+        assertDoesNotThrow(() -> MarkdownRenderer.render(md, plain, 10));
+        assertDoesNotThrow(() -> MarkdownRenderer.render(md, color, 10));
+        String plain10 = MarkdownRenderer.render(md, plain, 10);
+        for (String l : plain10.split("\n")) assertEquals(strip(plain10.split("\n")[0]).length(), strip(l).length());
+    }
+
+    @Test
+    void tableCompressionPreservesInlineStyleTruncated() {
+        String md = "| Col1 | Col2 |\n|------|------|\n| `verylongcode` | normal |";
+        String color80 = MarkdownRenderer.render(md, color, 80);
+        String[] lines80 = color80.split("\n");
+        assertTrue(lines80[2].contains(Style.ANSI_GREEN), "正常宽度数据行应含绿");
+        int len80 = strip(lines80[2]).length();
+        String color15 = MarkdownRenderer.render(md, color, 15);
+        String color10 = MarkdownRenderer.render(md, color, 10);
+        for (String l : color15.split("\n")) assertEquals(15, strip(l).length());
+        for (String l : color10.split("\n")) assertEquals(10, strip(l).length());
+        // 压缩截断后仍保留绿色（被截断但样式未丢）
+        assertTrue(color15.split("\n")[2].contains(Style.ANSI_GREEN), "压缩后截断数据行仍应含绿");
+        assertTrue(color10.split("\n")[2].contains(Style.ANSI_GREEN), "极窄截断仍应含绿");
+        // 去色剥离一致
+        assertEquals(MarkdownRenderer.render(md, plain, 15), strip(color15));
+        assertEquals(MarkdownRenderer.render(md, plain, 10), strip(color10));
+        // 压缩后可见长度应小于未压缩
+        assertTrue(strip(color15.split("\n")[2]).length() < len80);
+        // 表头/分隔线样式在压缩后仍存在
+        assertTrue(color15.split("\n")[0].contains(Style.ANSI_BOLD));
+        assertTrue(color15.split("\n")[1].contains(Style.ANSI_GRAY));
+    }
+
+    @Test
+    void tableExtremeNarrowWidthOneAndTwoNotThrow() {
+        String md = "| A | B |\n|---|---|\n| x | y |";
+        for (int w : new int[]{2, 1, 0, -5}) {
+            assertDoesNotThrow(() -> MarkdownRenderer.render(md, plain, w), "宽度 " + w + " 不应抛异常");
+            assertDoesNotThrow(() -> MarkdownRenderer.render(md, color, w), "宽度 " + w + " 有色不应抛异常");
+            String p = MarkdownRenderer.render(md, plain, w);
+            String c = MarkdownRenderer.render(md, color, w);
+            assertNotNull(p);
+            assertNotNull(c);
+            assertFalse(p.isEmpty(), "宽度 " + w + " 输出不应为空");
+            // 各行对齐（即使溢出也保持各行同宽）
+            String[] pLines = p.split("\n");
+            String[] cLines = c.split("\n");
+            int pl = strip(pLines[0]).length();
+            for (String l : pLines) assertEquals(pl, strip(l).length(), "宽度 " + w + " 各行仍对齐");
+            int cl = strip(cLines[0]).length();
+            for (String l : cLines) assertEquals(cl, strip(l).length());
+            assertEquals(p, strip(c), "宽度 " + w + " 剥离后应一致");
+        }
+        // 极窄单列同样
+        String single = "| H |\n|---|\n| x |";
+        assertDoesNotThrow(() -> MarkdownRenderer.render(single, plain, 1));
+        assertDoesNotThrow(() -> MarkdownRenderer.render(single, color, 1));
+        // 空单元格极窄
+        String empty = "| A | B | C |\n|---|---|---|\n|  |  |  |";
+        assertDoesNotThrow(() -> MarkdownRenderer.render(empty, plain, 1));
+        assertDoesNotThrow(() -> MarkdownRenderer.render(empty, color, 1));
+    }
+
+    @Test
+    void tableNullStyleFallbackAndEmptyInputNotThrow() {
+        String md = "| H1 | H2 |\n|----|----|\n| a | b |";
+        // null style 按 PLAIN
+        String nullOut = MarkdownRenderer.render(md, null, 80);
+        String plainOut = MarkdownRenderer.render(md, plain, 80);
+        assertEquals(plainOut, nullOut);
+        assertFalse(nullOut.contains("\u001B["));
+        // 空 markdown 不崩
+        assertEquals("", MarkdownRenderer.render("", plain, 80));
+        assertEquals("", MarkdownRenderer.render(null, plain, 80));
+        // 纯表格输入的边界：分隔线可见一致性
+        String[] lines = plainOut.split("\n");
+        int len = strip(lines[0]).length();
+        for (String l : lines) assertEquals(len, strip(l).length());
+    }
 }
