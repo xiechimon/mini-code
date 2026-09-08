@@ -138,7 +138,7 @@ public final class MarkdownRenderer {
             String lit = html.getLiteral();
             return lit != null ? stripTrailingNewline(lit) : "";
         } else if (isTableBlock(node)) {
-            return renderTableFallback(node, style);
+            return renderTable(node, style, width);
         } else {
             // 未知块：尝试按行内渲染（可能为自定义块）或递归子块
             if (node.getFirstChild() != null) {
@@ -164,24 +164,203 @@ public final class MarkdownRenderer {
         return node.getClass().getSimpleName().equals("TableBlock");
     }
 
-    /** 表格透传：按「文本 | 文本」与换行展开，保持可读，暂不做自适应列宽（后续票）。 */
-    private static String renderTableFallback(Node tableBlock, Style style) {
-        StringBuilder sb = new StringBuilder();
+    /**
+     * 表格自适应渲染：列宽按内容自适应，可用宽度不足时按比例压缩仍保持对齐。
+     * <p>
+     * 样式：表头粗体、分隔线暗灰、数据行默认；PLAIN 下同规则纯文本。
+     * 边界：单列、空单元格、极窄宽度不崩；表格行不折行，靠列宽压缩适配。
+     * </p>
+     */
+    private static String renderTable(Node tableBlock, Style style, int width) {
+        // 收集表头与表体行（样式前）
+        java.util.ArrayList<java.util.ArrayList<String>> headerRows = new java.util.ArrayList<>();
+        java.util.ArrayList<java.util.ArrayList<String>> bodyRows = new java.util.ArrayList<>();
         for (Node section = tableBlock.getFirstChild(); section != null; section = section.getNext()) {
+            String sName = section.getClass().getSimpleName();
+            boolean isHead = "TableHead".equals(sName);
             for (Node row = section.getFirstChild(); row != null; row = row.getNext()) {
-                StringBuilder rowSb = new StringBuilder();
+                java.util.ArrayList<String> cells = new java.util.ArrayList<>();
                 for (Node cell = row.getFirstChild(); cell != null; cell = cell.getNext()) {
-                    String cellText = renderInlines(cell, style);
-                    // 透传时剥离 ANSI 保持纯文本对齐预期（后续票会加表头粗体与列宽）
-                    String plain = stripAnsi(cellText);
-                    if (rowSb.length() > 0) rowSb.append(" | ");
-                    rowSb.append(plain);
+                    String cellStyled = renderInlines(cell, style);
+                    cells.add(cellStyled);
                 }
-                if (sb.length() > 0) sb.append("\n");
-                sb.append(rowSb);
+                if (isHead) headerRows.add(cells);
+                else bodyRows.add(cells);
             }
         }
-        return sb.toString();
+        java.util.ArrayList<java.util.ArrayList<String>> allRows = new java.util.ArrayList<>();
+        allRows.addAll(headerRows);
+        allRows.addAll(bodyRows);
+        if (allRows.isEmpty()) return "";
+        int n = 0;
+        for (java.util.ArrayList<String> r : allRows) n = Math.max(n, r.size());
+        if (n == 0) return "";
+        // 补齐列数
+        for (java.util.ArrayList<String> r : allRows) while (r.size() < n) r.add("");
+        for (java.util.ArrayList<String> r : headerRows) while (r.size() < n) r.add("");
+        for (java.util.ArrayList<String> r : bodyRows) while (r.size() < n) r.add("");
+
+        // 按可见长度计算期望列宽
+        int[] desired = new int[n];
+        for (java.util.ArrayList<String> r : allRows) {
+            for (int i = 0; i < n; i++) {
+                int vis = visibleLength(r.get(i));
+                desired[i] = Math.max(desired[i], vis);
+            }
+        }
+        for (int i = 0; i < n; i++) if (desired[i] == 0) desired[i] = 1;
+
+        int w = width <= 0 ? 80 : width;
+        int[] colWidths = computeColumnWidths(desired, w, n);
+
+                // header 用 " | "，分隔线用 "-+-"，二者长度均为 3，保持 header/分隔线/数据行总可见长度一致
+        String headerJoiner = " | ";
+        String sepJ = "-+-";
+
+        java.util.ArrayList<String> lines = new java.util.ArrayList<>();
+        // 表头行（粗体）
+        for (java.util.ArrayList<String> hRow : headerRows) {
+            java.util.ArrayList<String> renderedCells = new java.util.ArrayList<>();
+            for (int i = 0; i < n; i++) {
+                String padded = padOrTruncateAnsi(hRow.get(i), colWidths[i]);
+                String wrapped = wrapHeaderCell(padded, style);
+                renderedCells.add(wrapped);
+            }
+            lines.add(String.join(headerJoiner, renderedCells));
+        }
+        // 分隔线（暗灰）
+        if (!headerRows.isEmpty()) {
+            java.util.ArrayList<String> dashParts = new java.util.ArrayList<>();
+            for (int i = 0; i < n; i++) dashParts.add("-".repeat(colWidths[i]));
+            String plainSep = String.join(sepJ, dashParts);
+            String styledSep = style.colorEnabled() ? Style.ANSI_GRAY + plainSep + Style.ANSI_RESET : plainSep;
+            lines.add(styledSep);
+        } else if (!bodyRows.isEmpty()) {
+            // 无表头时仍需分隔线以保持结构？按 GFM 表总有表头，此分支防御
+        }
+        // 数据行（默认样式，保留行内样式如代码绿）
+        for (java.util.ArrayList<String> bRow : bodyRows) {
+            java.util.ArrayList<String> renderedCells = new java.util.ArrayList<>();
+            for (int i = 0; i < n; i++) {
+                String padded = padOrTruncateAnsi(bRow.get(i), colWidths[i]);
+                renderedCells.add(padded);
+            }
+            lines.add(String.join(headerJoiner, renderedCells));
+        }
+        // 若无 body 但有 header，已包含 header+分隔线；若表仅有 header 无 body，仍输出 header+分隔线
+        return String.join("\n", lines);
+    }
+
+    /** 计算列宽：期望宽度内按比例压缩，最小 1，极窄时溢出但不崩。 */
+    private static int[] computeColumnWidths(int[] desired, int width, int n) {
+        int totalSep = (n - 1) * 3;
+        int sumDesired = 0;
+        for (int d : desired) sumDesired += d;
+        int totalDesired = sumDesired + totalSep;
+        if (totalDesired <= width) return desired.clone();
+        int available = width - totalSep;
+        if (available < n) {
+            int[] min = new int[n];
+            java.util.Arrays.fill(min, 1);
+            return min;
+        }
+        if (sumDesired == 0) {
+            int[] res = new int[n];
+            int per = available / n;
+            int rem = available % n;
+            for (int i = 0; i < n; i++) res[i] = per + (i < rem ? 1 : 0);
+            for (int i = 0; i < n; i++) if (res[i] < 1) res[i] = 1;
+            return res;
+        }
+        int[] cw = new int[n];
+        double[] fractions = new double[n];
+        int sumFloor = 0;
+        double ratio = (double) available / sumDesired;
+        for (int i = 0; i < n; i++) {
+            double exact = desired[i] * ratio;
+            int fl = (int) Math.floor(exact);
+            if (fl < 1) fl = 1;
+            cw[i] = fl;
+            fractions[i] = exact - Math.floor(exact);
+            sumFloor += fl;
+        }
+        while (sumFloor > available) {
+            int idx = -1;
+            int maxVal = -1;
+            for (int i = 0; i < n; i++) if (cw[i] > 1 && cw[i] > maxVal) { maxVal = cw[i]; idx = i; }
+            if (idx == -1) break;
+            cw[idx]--;
+            sumFloor--;
+        }
+        while (sumFloor < available) {
+            int idx = -1;
+            double best = -1;
+            for (int i = 0; i < n; i++) if (fractions[i] > best) { best = fractions[i]; idx = i; }
+            if (idx == -1 || best < 0) {
+                idx = -1;
+                int maxDesired = -1;
+                for (int i = 0; i < n; i++) if (cw[i] < desired[i] && desired[i] > maxDesired) { maxDesired = desired[i]; idx = i; }
+                if (idx == -1) {
+                    idx = 0;
+                    for (int i = 1; i < n; i++) if (cw[i] < cw[idx]) idx = i;
+                }
+            }
+            cw[idx]++;
+            fractions[idx] = -1;
+            sumFloor++;
+        }
+        return cw;
+    }
+
+    /** 将已带 ANSI 的单元格内容按可见宽度填补或截断至目标宽度。 */
+    private static String padOrTruncateAnsi(String styled, int width) {
+        if (styled == null) styled = "";
+        int vis = visibleLength(styled);
+        if (vis == width) return styled;
+        if (vis < width) return styled + " ".repeat(width - vis);
+        return truncateVisible(styled, width);
+    }
+
+    /** 按可见长度截断，保留 ANSI 序列，截断后若处于样式内则补 RESET 避免串色。 */
+    private static String truncateVisible(String s, int width) {
+        if (s == null) return "";
+        if (visibleLength(s) <= width) return s;
+        StringBuilder out = new StringBuilder();
+        int vis = 0;
+        int i = 0;
+        int n = s.length();
+        while (i < n && vis < width) {
+            char c = s.charAt(i);
+            if (c == '\u001B' && i + 1 < n && s.charAt(i + 1) == '[') {
+                int mIdx = s.indexOf('m', i);
+                if (mIdx == -1) {
+                    out.append(c);
+                    vis++;
+                    i++;
+                } else {
+                    out.append(s, i, mIdx + 1);
+                    i = mIdx + 1;
+                }
+            } else {
+                out.append(c);
+                vis++;
+                i++;
+            }
+        }
+        String cur = out.toString();
+        String active = findActiveAnsi(cur);
+        if (active != null) cur = cur + Style.ANSI_RESET;
+        return cur;
+    }
+
+    /** 包装表头单元格为粗体，处理内层 RESET 后重开粗体以保持整格粗体。 */
+    private static String wrapHeaderCell(String paddedStyled, Style style) {
+        if (!style.colorEnabled() || paddedStyled == null || paddedStyled.isEmpty()) return paddedStyled;
+        String withReopen = paddedStyled;
+        if (withReopen.contains(Style.ANSI_RESET)) {
+            withReopen = withReopen.replace(Style.ANSI_RESET, Style.ANSI_RESET + Style.ANSI_BOLD);
+        }
+        return Style.ANSI_BOLD + withReopen + Style.ANSI_RESET;
     }
 
     /** 列表项透传：内部可能含段落等块，按块拼接。 */
