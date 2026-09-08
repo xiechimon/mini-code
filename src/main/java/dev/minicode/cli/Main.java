@@ -561,7 +561,7 @@ public class Main {
                 System.out.println(rendered);
                 return;
             } else if (e instanceof AgentEvent.MessageStart) {
-                streamer.reset();                        // 消息开始：刷新流式状态（重装备用，覆盖后续占位行）
+                streamer.reset();                        // 消息开始：刷新流式状态，重武装占位行供首个 MessageUpdate 覆盖
                 return;
             } else if (e instanceof AgentEvent.MessageUpdate mu) {
                 streamer.delta(mu.delta());

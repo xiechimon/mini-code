@@ -10,7 +10,7 @@ Status: ready-for-agent
 
 把事件层对齐成 pi 的**消息生命周期**三事件，并换掉旧命名：
 
-- `MessageStart`：一条助手消息开始（消息开始前的标记，携带消息身份/元数据）。
+- `MessageStart`：一条助手消息开始（消息开始前的标记/锚点事件，暂不携带消息元数据——`Message` 尚无 id）；用于渲染层刷新流式状态。
 - `MessageUpdate`：逐片段文本增量（原 `StreamDelta` **改名**，语义不变，单层 delta）。
 - `MessageEnd`：携带最终完整 `Message` 与其 `stopReason`（`aborted` 是 `stopReason` 的一种，非额外事件）。
 
