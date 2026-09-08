@@ -67,18 +67,30 @@ public final class EventRenderer {
     }
 
     /**
-     * 纯函数渲染入口（不涉及时耗）。
+     * 纯函数渲染入口（不涉及时耗，宽度默认 80）。
      *
      * @param event 事件
      * @param style 样式开关（决定是否允许 ANSI，供四色接入）
      * @return 待打印文本，空字符串表示该事件无需输出（调用方应跳过打印）
      */
     public static String render(AgentEvent event, Style style) {
-        return render(event, style, TurnStats.inferred(null));
+        return render(event, style, TurnStats.inferred(null), AnsiTextUtil.DEFAULT_WIDTH);
     }
 
     /**
-     * 纯函数渲染入口（带耗时注入）。
+     * 纯函数渲染入口（带宽度注入，不涉及时耗）。
+     *
+     * @param event 事件
+     * @param style 样式开关
+     * @param width 可用宽度（注入，交互取终端宽度、管道 80）
+     * @return 待打印文本
+     */
+    public static String render(AgentEvent event, Style style, int width) {
+        return render(event, style, TurnStats.inferred(null), width);
+    }
+
+    /**
+     * 纯函数渲染入口（带耗时注入，宽度默认 80）。
      * <p>
      * 本方法为兼容旧调用保留：未显式传入轮数/工具次数时，将从 AgentEnd 的 messages 推断。
      * 新代码应优先使用 {@link #render(AgentEvent, Style, TurnStats)} 显式注入计数。
@@ -90,11 +102,18 @@ public final class EventRenderer {
      * @return 待打印文本，空字符串表示无需输出
      */
     public static String render(AgentEvent event, Style style, Duration elapsed) {
-        return render(event, style, TurnStats.inferred(elapsed));
+        return render(event, style, TurnStats.inferred(elapsed), AnsiTextUtil.DEFAULT_WIDTH);
     }
 
     /**
-     * 纯函数渲染入口（带耗时与计数注入，旧四参兼容）。
+     * 纯函数渲染入口（带耗时与宽度注入）。
+     */
+    public static String render(AgentEvent event, Style style, Duration elapsed, int width) {
+        return render(event, style, TurnStats.inferred(elapsed), width);
+    }
+
+    /**
+     * 纯函数渲染入口（带耗时与计数注入，旧四参兼容，宽度默认 80）。
      * <p>
      * 轮末统计渲染为：N 轮 · M 次工具 · X.Xs，耗时格式化为一位小数秒。
      * 渲染器不碰时钟，耗时必须由调用方计时后传入；工具次数由调用方基于事件流累计后传入。
@@ -109,11 +128,18 @@ public final class EventRenderer {
      * @return 待打印文本
      */
     public static String render(AgentEvent event, Style style, Duration elapsed, int turns, int toolCalls) {
-        return render(event, style, new TurnStats(elapsed, turns, toolCalls));
+        return render(event, style, new TurnStats(elapsed, turns, toolCalls), AnsiTextUtil.DEFAULT_WIDTH);
     }
 
     /**
-     * 纯函数渲染入口（收敛 Data Clumps：耗时与计数收拢为 {@link TurnStats}）。
+     * 纯函数渲染入口（带耗时、计数与宽度注入，旧五参兼容）。
+     */
+    public static String render(AgentEvent event, Style style, Duration elapsed, int turns, int toolCalls, int width) {
+        return render(event, style, new TurnStats(elapsed, turns, toolCalls), width);
+    }
+
+    /**
+     * 纯函数渲染入口（收敛 Data Clumps：耗时与计数收拢为 {@link TurnStats}，宽度默认 80）。
      * <p>
      * 轮末统计渲染为：N 轮 · M 次工具 · X.Xs，其中「M 次工具」段用成功绿、其余（N 轮/耗时）用暗灰；
      * 去色模式纯文本。耗时格式化为一位小数秒，渲染器不碰时钟，计数由事件流累计后注入。
@@ -126,9 +152,27 @@ public final class EventRenderer {
      * @return 待打印文本
      */
     public static String render(AgentEvent event, Style style, TurnStats stats) {
-        // 防御：style 可能为 null 时按去色处理（保持纯文本）；stats 可能为 null 时按推断处理
+        return render(event, style, stats, AnsiTextUtil.DEFAULT_WIDTH);
+    }
+
+    /**
+     * 纯函数渲染入口（收敛 Data Clumps + 宽度注入）。
+     * <p>
+     * 助手消息正文经 {@link MarkdownRenderer} 渲染（样式与宽度注入）；工具结果/轮首/横幅/统计路径不变。
+     * 宽度对非正文路径无影响，仍保持纯函数（不读环境、不碰时钟）。
+     * </p>
+     *
+     * @param event 事件
+     * @param style 样式开关
+     * @param stats 轮末统计（可为 null，视为推断）
+     * @param width 可用宽度（注入，交互取终端宽度、管道 80；<=0 按 80 处理）
+     * @return 待打印文本
+     */
+    public static String render(AgentEvent event, Style style, TurnStats stats, int width) {
+        // 防御：style 可能为 null 时按去色处理（保持纯文本）；stats 可能为 null 时按推断处理；width 非法时按默认宽度
         if (style == null) style = Style.PLAIN;
         if (stats == null) stats = TurnStats.inferred(null);
+        width = AnsiTextUtil.normalizeWidth(width);
 
         if (event instanceof AgentEvent.TurnStart t) {
             String text = "\n[第 " + t.turn() + " 轮] 思考中...";
@@ -142,7 +186,13 @@ public final class EventRenderer {
             String txt = msg.text();
             boolean hasText = txt != null && !txt.isBlank();
             if (hasText) {
-                sb.append(txt);
+                // 正文经 Markdown 渲染管线（纯函数，样式与宽度注入）
+                String renderedBody = MarkdownRenderer.render(txt, style, width);
+                if (renderedBody != null && !renderedBody.isEmpty()) {
+                    sb.append(renderedBody);
+                } else {
+                    sb.append(txt);
+                }
             }
             for (Message.ToolCall tc : msg.toolCalls()) {
                 if (sb.length() > 0) sb.append("\n");
