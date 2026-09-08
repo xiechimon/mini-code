@@ -90,12 +90,13 @@ class EventRendererStreamingTest {
     @Test
     void streamDeltaWithoutStateNoControlSequence() {
         AgentEvent.StreamDelta d = new AgentEvent.StreamDelta("hello");
+        // 管道专用：state==null 时原样直出无控制序列
         String out = EventRenderer.render(d, plain, 80, null);
         assertEquals("hello", out);
         assertFalse(out.contains("\u001B["), "无 state 时不应含控制序列（管道模式）");
-        // 通过主 render 入口（AgentEvent）也应直出无控制
+        // 通用入口不再处理 StreamDelta，防非管道误用导致首片段未覆盖占位行
         String out2 = EventRenderer.render((AgentEvent) d, plain, 80);
-        assertEquals("hello", out2);
+        assertEquals("", out2, "通用入口不再直出 StreamDelta，管道专用请用 render(StreamDelta, Style, int, null)");
         assertFalse(out2.contains("\u001B["));
     }
 

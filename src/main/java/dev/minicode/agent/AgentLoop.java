@@ -36,9 +36,10 @@ public class AgentLoop {
     private final List<ToolDefinition> tools;
     private final int maxTurns; // 最大轮次，防止无限循环
     private final Supplier<InterruptTrigger> triggerSupplier;
+    private final boolean streamingEnabled; // 管道模式禁用流式，零 StreamDelta 发射
 
     public AgentLoop(LlmClient llm, Model model, String systemPrompt, List<ToolDefinition> tools, int maxTurns) {
-        this(llm, model, systemPrompt, tools, maxTurns, (Supplier<InterruptTrigger>) null);
+        this(llm, model, systemPrompt, tools, maxTurns, (Supplier<InterruptTrigger>) null, true);
     }
 
     /**
@@ -50,12 +51,23 @@ public class AgentLoop {
      */
     public AgentLoop(LlmClient llm, Model model, String systemPrompt, List<ToolDefinition> tools, int maxTurns,
                      Supplier<InterruptTrigger> triggerSupplier) {
+        this(llm, model, systemPrompt, tools, maxTurns, triggerSupplier, true);
+    }
+
+    /**
+     * 带流式开关的构造——管道模式（非 tty）传 false 走同步 chat 等价路径，零 StreamDelta 发射。
+     *
+     * @param streamingEnabled false 时禁用流式，streamOnce 直接委派 chat，不发射 StreamDelta
+     */
+    public AgentLoop(LlmClient llm, Model model, String systemPrompt, List<ToolDefinition> tools, int maxTurns,
+                     Supplier<InterruptTrigger> triggerSupplier, boolean streamingEnabled) {
         this.llm = llm;
         this.model = model;
         this.systemPrompt = systemPrompt;
         this.tools = tools;
         this.maxTurns = maxTurns;
         this.triggerSupplier = triggerSupplier != null ? triggerSupplier : () -> () -> false;
+        this.streamingEnabled = streamingEnabled;
     }
 
     /**
@@ -165,11 +177,21 @@ public class AgentLoop {
     }
 
     /**
-     * 单次流式调用：每次取一个触发器（置位即取消），完成后释放；
+     * 单次调用：流式启用时每次取触发器（置位即取消），完成后释放；
      * 每个文本片段回调即发射 {@link AgentEvent.StreamDelta}，累积为完整 Message 后返回。
+     * 管道模式禁用流式时直接走同步 chat 等价路径，零 StreamDelta 发射、无逐字输出。
      * 中断语义：已收文本以 stopReason=aborted 的 partial 进入历史，本轮工具不执行。
      */
     private Message streamOnce(Context ctx, EventSink sink) throws Exception {
+        // 管道禁用流式：走既有同步路径，等价 chat，不发射 StreamDelta
+        if (!streamingEnabled) {
+            Message sync = llm.chat(model, ctx);
+            if (sync == null) {
+                sync = buildAborted("");
+                sync.stopReason = "error";
+            }
+            return sync;
+        }
         InterruptTrigger trigger = null;
         Supplier<Boolean> isCancelled = () -> false;
         if (triggerSupplier != null) {
@@ -196,14 +218,28 @@ public class AgentLoop {
                 }
             }, isCancelled);
         } catch (CancellationException ce) {
-            // 触发器导致的取消——返回已收 partial
-            Thread.currentThread().interrupt();
-            result = buildAborted(partialBuffer.toString());
-            log.debug("流式已取消，返回 partial aborted，长度 {}", partialBuffer.length());
+            boolean actuallyCancelled = false;
+            try { actuallyCancelled = isCancelled.get() || Thread.currentThread().isInterrupted(); } catch (Exception ignore) {}
+            if (actuallyCancelled) {
+                Thread.currentThread().interrupt();
+                result = buildAborted(partialBuffer.toString());
+                log.debug("流式已取消，返回 partial aborted，长度 {}", partialBuffer.length());
+            } else {
+                log.warn("非取消上下文的 CancellationException，不转为 aborted", ce);
+                throw ce;
+            }
         } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            result = buildAborted(partialBuffer.toString());
-            log.debug("流式被中断，返回 partial aborted");
+            boolean actuallyCancelled = false;
+            try { actuallyCancelled = isCancelled.get() || Thread.currentThread().isInterrupted(); } catch (Exception ignore) {}
+            if (actuallyCancelled) {
+                Thread.currentThread().interrupt();
+                result = buildAborted(partialBuffer.toString());
+                log.debug("流式被中断，返回 partial aborted");
+            } else {
+                log.warn("非取消上下文的 InterruptedException，不转为 aborted", ie);
+                Thread.currentThread().interrupt();
+                throw ie;
+            }
         } catch (Exception e) {
             boolean cancelled = false;
             try {

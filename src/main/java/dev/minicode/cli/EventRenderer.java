@@ -165,7 +165,8 @@ public final class EventRenderer {
      * <p>
      * 保持渲染器纯函数缝不破坏：状态由调用方持有（Main 的 StreamState），此处仅更新并返回带 CUU 的文本。
      * 首个 StreamDelta 到达时前置「光标上移 1 行+清行」({@code \u001B[1A\u001B[2K}) 覆盖 TurnStart 占位行；
-     * 后续片段直接原样直出。非流式/去色路径下 state 为 null 时仅原样返回 delta。
+     * 后续片段直接原样直出。管道模式专用：state 为 null 时仅原样返回 delta（无控制序列）；
+     * 交互式路径必须传非 null 的 StreamState，否则首片段占位行未被覆盖。
      * </p>
      */
     public static String render(AgentEvent.StreamDelta e, Style style, int width, StreamState state) {
@@ -275,10 +276,10 @@ public final class EventRenderer {
         if (stats == null) stats = TurnStats.inferred(null);
         width = AnsiTextUtil.normalizeWidth(width);
 
-        if (event instanceof AgentEvent.StreamDelta sd) {
-            // 非流式/管道路径的直出——无状态时仅原样返回 delta，不含控制序列，保证管道无 CUU
-            if (sd.delta() == null || sd.delta().isEmpty()) return "";
-            return sd.delta();
+        if (event instanceof AgentEvent.StreamDelta) {
+            // 管道专用直出已迁移至 render(StreamDelta, Style, int, StreamState=null)，此处不再处理
+            // 以防非管道误用导致首片段未覆盖占位行（交互式必须走带 StreamState 的重载）
+            return "";
         } else if (event instanceof AgentEvent.TurnStart t) {
             String text = "\n[第 " + t.turn() + " 轮] 思考中...";
             return maybeColor(text, Style.ANSI_GRAY, style);

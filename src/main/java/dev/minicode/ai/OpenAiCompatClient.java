@@ -141,6 +141,7 @@ public class OpenAiCompatClient implements LlmClient {
         Supplier<Boolean> cancel = isCancelled != null ? isCancelled : () -> false;
         Consumer<String> cb = onDelta != null ? onDelta : s -> {
         };
+        AtomicBoolean fallbackGuard = new AtomicBoolean(false);
         try {
             return doStream(model, context, cb, cancel);
         } catch (CancellationException | InterruptedException e) {
@@ -162,6 +163,10 @@ public class OpenAiCompatClient implements LlmClient {
                 m.content = List.of(Message.Content.text(""));
                 m.stopReason = "aborted";
                 return m;
+            }
+            if (!fallbackGuard.compareAndSet(false, true)) {
+                log.warn("已回退过，不二次回退", e);
+                throw e;
             }
             log.warn("流式请求失败，回退为非流式: {}", e.toString(), e);
             try {

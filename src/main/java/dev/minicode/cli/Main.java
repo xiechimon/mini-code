@@ -121,18 +121,13 @@ public class Main {
         LlmClient llmRepl = new OpenAiCompatClient(cfgRepl.apiKey());
         Model modelRepl = cfgRepl.model();
         List<ToolDefinition> toolsRepl = List.of(new ReadTool(workdir), new WriteTool(workdir), new EditTool(workdir), new BashTool(workdir));
-        // REPL 的流式触发器：交互式（tty）时注册 SIGINT 映射到取消信号，管道模式（System.console()==null）返回空触发器（永不取消）且不产生控制序列
-        java.util.function.Supplier<InterruptTrigger> replTriggerSupplier = () -> {
-            if (System.console() == null) {
-                return () -> false;
-            }
-            return new SigIntInterruptTrigger();
-        };
+        // REPL 的流式触发器：交互式流式期间注册 SIGINT 映射到取消信号，结束后注销恢复原语义
+        java.util.function.Supplier<InterruptTrigger> replTriggerSupplier = () -> new SigIntInterruptTrigger();
         AgentLoop loopRepl = new AgentLoop(llmRepl, modelRepl, buildSystemPrompt(workdir), toolsRepl, 20, replTriggerSupplier);
         List<Message> history = new ArrayList<>();
         // 区分管道 vs 交互式终端：System.console()==null 表示管道/重定向，此时一次性读完所有行后退出，避免 hasNextLine 阻塞
         if (System.console() == null) {
-            // 管道模式：一次性读取 stdin 所有内容，按行处理
+            // 管道模式：一次性读取 stdin 所有内容，按行处理；不启用流式与重绘，走同步路径，零 StreamDelta
             String piped;
             try {
                 piped = new String(System.in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
@@ -144,8 +139,9 @@ public class Main {
             if (prompts.isEmpty()) {
                 System.out.println("[mini-code] 未从管道读取到有效输入，退出。");
             }
+            AgentLoop pipelineLoop = new AgentLoop(llmRepl, modelRepl, buildSystemPrompt(workdir), toolsRepl, 20, () -> () -> false, false);
             for (String prompt : prompts) {
-                runReplTurn(prompt, history, loopRepl);
+                runReplTurn(prompt, history, pipelineLoop);
             }
         } else {
             // 交互式终端：JLine 行编辑（方向键移动光标、上下翻历史），对齐 pi 的 node:readline。
@@ -380,9 +376,9 @@ public class Main {
      */
     static void runScannerRepl(List<Message> history, AgentLoop loop) throws Exception {
         java.util.Scanner scanner = new java.util.Scanner(System.in, StandardCharsets.UTF_8);
-        // 降级也使用 ❯ 提示符，保持一致
         Style style = Style.detect(System.getenv(), true);
         String promptStr = prompt(style);
+        int width = resolveWidth(null);
         while (true) {
             System.out.print(promptStr);
             System.out.flush();
@@ -395,7 +391,8 @@ public class Main {
                 System.out.println("[mini-code] 再见");
                 break;
             }
-            runReplTurn(line, history, loop);
+            // 降级输入也走流式路径，与 JLine 交互同款（SIGINT 由 loop 的 triggerSupplier 接管）
+            runReplTurn(line, history, loop, style, width);
         }
     }
 
@@ -423,7 +420,8 @@ public class Main {
     }
 
     /**
-     * one-shot 执行一次
+     * one-shot 执行一次——tty 时与 REPL 同款流式体验：注册 SIGINT 触发器 + StreamState 重绘；
+     * 管道（非 tty）时走同步路径，零 StreamDelta、无逐字与控制序列。
      */
     private static void runOneTurn(String prompt, Path workdir) throws Exception {
         LlmConfig cfg = LlmConfig.resolve();
@@ -437,40 +435,83 @@ public class Main {
         LlmClient llm = new OpenAiCompatClient(cfg.apiKey());
         Model model = cfg.model();
         List<ToolDefinition> tools = List.of(new ReadTool(workdir), new WriteTool(workdir), new EditTool(workdir), new BashTool(workdir));
-        AgentLoop loop = new AgentLoop(llm, model, buildSystemPrompt(workdir), tools, 20);
+        boolean isTty = System.console() != null;
+        Style renderStyle = bannerStyle;
+        int renderWidth = resolveWidth(null);
         List<Message> prompts = List.of(Message.user(prompt));
         System.out.println("---");
-        // 轮末统计：耗时由入口计时后注入，工具次数由事件流累计，渲染器不碰时钟（收敛为 TurnStats）
         long startNanos = System.nanoTime();
         int[] turns = {0};
         int[] toolCalls = {0};
-        Style renderStyle = bannerStyle;
-        int renderWidth = resolveWidth(null);
-        AgentLoop.EventSink sink = e -> {
-            if (e instanceof AgentEvent.TurnStart) {
-                turns[0]++;
-            } else if (e instanceof AgentEvent.ToolResultEvent) {
-                toolCalls[0]++;
-            }
-            String rendered;
-            if (e instanceof AgentEvent.AgentEnd) {
-                Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-                rendered = EventRenderer.render(e, renderStyle, TurnStats.of(elapsed, turns[0], toolCalls[0]), renderWidth);
-            } else {
-                rendered = EventRenderer.render(e, renderStyle, renderWidth);
-            }
-            if (rendered == null || rendered.isEmpty()) return;
-            System.out.println(rendered);
-        };
-        List<Message> result = loop.run(prompts, sink);
-        result.stream().filter(m -> m.role == Message.Role.assistant).reduce((a, b) -> b).ifPresent(m -> {
-            if ("error".equals(m.stopReason)) System.exit(2);
-        });
+        if (isTty) {
+            java.util.function.Supplier<InterruptTrigger> triggerSupplier = () -> new SigIntInterruptTrigger();
+            AgentLoop loop = new AgentLoop(llm, model, buildSystemPrompt(workdir), tools, 20, triggerSupplier);
+            StreamState streamState = new StreamState(renderWidth);
+            AgentLoop.EventSink sink = e -> {
+                if (e instanceof AgentEvent.TurnStart) {
+                    turns[0]++;
+                    streamState.reset();
+                    String rendered = EventRenderer.render(e, renderStyle, renderWidth);
+                    if (rendered == null || rendered.isEmpty()) return;
+                    System.out.println(rendered);
+                    return;
+                } else if (e instanceof AgentEvent.StreamDelta sd) {
+                    String rendered = EventRenderer.render(sd, renderStyle, renderWidth, streamState);
+                    if (rendered == null || rendered.isEmpty()) return;
+                    System.out.print(rendered);
+                    System.out.flush();
+                    return;
+                } else if (e instanceof AgentEvent.MessageEnd me) {
+                    String rendered = EventRenderer.render(me, renderStyle, renderWidth, streamState);
+                    if (rendered == null || rendered.isEmpty()) return;
+                    System.out.println(rendered);
+                    return;
+                } else if (e instanceof AgentEvent.AgentEnd ae) {
+                    Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
+                    String rendered = EventRenderer.render(ae, renderStyle, TurnStats.of(elapsed, turns[0], toolCalls[0]), renderWidth, streamState);
+                    if (rendered == null || rendered.isEmpty()) return;
+                    System.out.println(rendered);
+                    return;
+                } else if (e instanceof AgentEvent.ToolResultEvent) {
+                    toolCalls[0]++;
+                }
+                String rendered = EventRenderer.render(e, renderStyle, renderWidth);
+                if (rendered == null || rendered.isEmpty()) return;
+                System.out.println(rendered);
+            };
+            List<Message> result = loop.run(prompts, sink);
+            result.stream().filter(m -> m.role == Message.Role.assistant).reduce((a, b) -> b).ifPresent(m -> {
+                if ("error".equals(m.stopReason)) System.exit(2);
+            });
+        } else {
+            AgentLoop loop = new AgentLoop(llm, model, buildSystemPrompt(workdir), tools, 20, () -> () -> false, false);
+            AgentLoop.EventSink sink = e -> {
+                if (e instanceof AgentEvent.TurnStart) {
+                    turns[0]++;
+                } else if (e instanceof AgentEvent.ToolResultEvent) {
+                    toolCalls[0]++;
+                }
+                String rendered;
+                if (e instanceof AgentEvent.AgentEnd) {
+                    Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
+                    rendered = EventRenderer.render(e, renderStyle, TurnStats.of(elapsed, turns[0], toolCalls[0]), renderWidth);
+                } else {
+                    rendered = EventRenderer.render(e, renderStyle, renderWidth);
+                }
+                if (rendered == null || rendered.isEmpty()) return;
+                System.out.println(rendered);
+            };
+            List<Message> result = loop.run(prompts, sink);
+            result.stream().filter(m -> m.role == Message.Role.assistant).reduce((a, b) -> b).ifPresent(m -> {
+                if ("error".equals(m.stopReason)) System.exit(2);
+            });
+        }
     }
 
     /**
      * REPL 单轮，带历史（计时与事件流计数在此注入渲染器）。
-     * 管道模式（非流式）专用——不注册 SIGINT、不产生光标控制序列，走零回调等价路径。
+     * 管道模式真正非流式——不注册 SIGINT、不产生光标控制序列，走同步 chat 等价路径，
+     * 零 StreamDelta 发射、无逐字输出行为，仅在 MessageEnd/AgentEnd 输出最终渲染。
      */
     private static void runReplTurn(String prompt, List<Message> history, AgentLoop loop) throws Exception {
         Style style = Style.detect(System.getenv(), System.console() != null);
@@ -483,13 +524,6 @@ public class Main {
         Style s = style;
         int w = width;
         AgentLoop.EventSink sink = e -> {
-            if (e instanceof AgentEvent.StreamDelta sd) {
-                String rendered = EventRenderer.render(sd, s, w, null);
-                if (rendered == null || rendered.isEmpty()) return;
-                System.out.print(rendered);
-                System.out.flush();
-                return;
-            }
             if (e instanceof AgentEvent.TurnStart) {
                 turns[0]++;
             } else if (e instanceof AgentEvent.ToolResultEvent) {

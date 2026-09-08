@@ -189,4 +189,62 @@ class AgentLoopStreamingTest {
         AgentEvent.MessageEnd me = events.stream().filter(e -> e instanceof AgentEvent.MessageEnd).map(e -> (AgentEvent.MessageEnd) e).findFirst().orElseThrow();
         assertEquals("sync", me.message().text());
     }
+
+    @Test
+    void pipelineDisabledStreamingEmitsZeroDeltaAndUsesChatPath() throws Exception {
+        // 管道真正非流式：streamingEnabled=false 时即使 LlmClient 的 stream 会发射 delta，也应零 StreamDelta
+        LlmClient streamingFake = new LlmClient() {
+            @Override public Message chat(Model model, Context context) {
+                Message m = new Message();
+                m.role = Message.Role.assistant;
+                m.content = List.of(Message.Content.text("sync-fallback"));
+                m.stopReason = "end";
+                return m;
+            }
+            @Override public Message stream(Model model, Context context, java.util.function.Consumer<String> onDelta, java.util.function.Supplier<Boolean> isCancelled) {
+                onDelta.accept("should-not-emit");
+                Message m = new Message();
+                m.role = Message.Role.assistant;
+                m.content = List.of(Message.Content.text("stream-should-not-be-used"));
+                m.stopReason = "end";
+                return m;
+            }
+        };
+        Model model = Model.opencodeGo("k");
+        // 管道 loop 禁用流式，期望走 chat 路径
+        AgentLoop pipelineLoop = new AgentLoop(streamingFake, model, "sys", List.of(), 3, () -> () -> false, false);
+        List<AgentEvent> events = new ArrayList<>();
+        pipelineLoop.run(List.of(Message.user("hi")), events::add);
+        assertEquals(0, events.stream().filter(e -> e instanceof AgentEvent.StreamDelta).count(), "管道模式零 StreamDelta 发射");
+        AgentEvent.MessageEnd me = events.stream().filter(e -> e instanceof AgentEvent.MessageEnd).map(e -> (AgentEvent.MessageEnd) e).findFirst().orElseThrow();
+        assertEquals("sync-fallback", me.message().text(), "管道应走 chat 同步路径而非 stream");
+        assertEquals("end", me.message().stopReason);
+    }
+
+    @Test
+    void cancellationExceptionWithoutFlagDoesNotBecomeAborted() throws Exception {
+        // 假 CancellationException 但未置取消信号，不应误转为 aborted
+        LlmClient fake = new LlmClient() {
+            @Override public Message chat(Model model, Context context) { return null; }
+            @Override public Message stream(Model model, Context context, java.util.function.Consumer<String> onDelta, java.util.function.Supplier<Boolean> isCancelled) {
+                throw new java.util.concurrent.CancellationException("fake without cancel");
+            }
+        };
+        InterruptTrigger never = () -> false;
+        AgentLoop loop = new AgentLoop(fake, Model.opencodeGo("k"), "sys", List.of(), 3, () -> never);
+        assertThrows(java.util.concurrent.CancellationException.class, () -> loop.run(List.of(Message.user("hi")), e -> {}), "未置取消的 CancellationException 不应转为 aborted");
+    }
+
+    @Test
+    void interruptedExceptionWithoutFlagDoesNotBecomeAborted() throws Exception {
+        LlmClient fake = new LlmClient() {
+            @Override public Message chat(Model model, Context context) { return null; }
+            @Override public Message stream(Model model, Context context, java.util.function.Consumer<String> onDelta, java.util.function.Supplier<Boolean> isCancelled) throws Exception {
+                throw new InterruptedException("fake interrupt without cancel");
+            }
+        };
+        InterruptTrigger never = () -> false;
+        AgentLoop loop = new AgentLoop(fake, Model.opencodeGo("k"), "sys", List.of(), 3, () -> never);
+        assertThrows(InterruptedException.class, () -> loop.run(List.of(Message.user("hi")), e -> {}));
+    }
 }

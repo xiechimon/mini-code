@@ -475,4 +475,62 @@ class SseParserTest {
         SseParser.TextDelta td = (SseParser.TextDelta) ev.stream().filter(e -> e instanceof SseParser.TextDelta).findFirst().orElseThrow();
         assertEquals("first", td.text());
     }
+
+    // ===== retry/event/id 字段显式忽略（补全警告） =====
+
+    @Test
+    void ignoresRetryFieldExplicitly() {
+        List<String> lines = List.of(
+                "retry: 3000",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}",
+                ""
+        );
+        List<SseParser.Event> ev = SseParser.parse(lines);
+        assertTrue(ev.stream().anyMatch(e -> e instanceof SseParser.Ignored i && "field-retry".equals(i.reason())), "retry 行应显式忽略");
+        assertEquals(1, ev.stream().filter(e -> e instanceof SseParser.TextDelta).count());
+        // 单独 retry 无 data 时仅忽略，不产生 delta
+        List<SseParser.Event> onlyRetry = SseParser.parse(List.of("retry: 0", ""));
+        assertTrue(onlyRetry.stream().allMatch(e -> e instanceof SseParser.Ignored));
+        assertTrue(onlyRetry.stream().anyMatch(e -> e instanceof SseParser.Ignored i && "field-retry".equals(i.reason())));
+    }
+
+    @Test
+    void ignoresEventFieldExplicitly() {
+        List<String> lines = List.of(
+                "event: message",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}",
+                ""
+        );
+        List<SseParser.Event> ev = SseParser.parse(lines);
+        assertTrue(ev.stream().anyMatch(e -> e instanceof SseParser.Ignored i && "field-event".equals(i.reason())), "event 行应显式忽略");
+        assertEquals(1, ev.stream().filter(e -> e instanceof SseParser.TextDelta).count());
+    }
+
+    @Test
+    void ignoresIdFieldExplicitly() {
+        List<String> lines = List.of(
+                "id: 42",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"world\"}}]}",
+                ""
+        );
+        List<SseParser.Event> ev = SseParser.parse(lines);
+        assertTrue(ev.stream().anyMatch(e -> e instanceof SseParser.Ignored i && "field-id".equals(i.reason())), "id 行应显式忽略");
+        assertEquals(1, ev.stream().filter(e -> e instanceof SseParser.TextDelta).count());
+    }
+
+    @Test
+    void ignoresRetryEventIdTogetherAndPreservesData() {
+        List<String> lines = List.of(
+                "retry: 2500",
+                "id: 999",
+                "event: delta",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"together\"}}]}",
+                ""
+        );
+        List<SseParser.Event> ev = SseParser.parse(lines);
+        assertTrue(ev.stream().anyMatch(e -> e instanceof SseParser.Ignored i && "field-retry".equals(i.reason())));
+        assertTrue(ev.stream().anyMatch(e -> e instanceof SseParser.Ignored i && "field-id".equals(i.reason())));
+        assertTrue(ev.stream().anyMatch(e -> e instanceof SseParser.Ignored i && "field-event".equals(i.reason())));
+        assertEquals("together", ((SseParser.TextDelta) ev.stream().filter(e -> e instanceof SseParser.TextDelta).findFirst().orElseThrow()).text());
+    }
 }
