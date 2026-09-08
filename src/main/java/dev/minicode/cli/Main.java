@@ -641,11 +641,9 @@ public class Main {
 
     /** 单次 / 管道路径的视口高度解析：有终端取高度，否则无上限（不启用 cap）。 */
     static int resolveViewportRows() {
-        boolean isTty = System.console() != null;
-        if (!isTty) return Integer.MAX_VALUE;
+        if (System.console() == null) return Integer.MAX_VALUE;
         try (Terminal t = TerminalBuilder.builder().system(true).build()) {
-            int h = t.getHeight();
-            if (h > 0) return h;
+            return terminalHeight(t);
         } catch (Exception ignored) {
         }
         return Integer.MAX_VALUE;

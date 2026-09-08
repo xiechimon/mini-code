@@ -46,7 +46,7 @@ Status: ready-for-agent
 - **两种块模式**（对齐所选契约「代码围栏不逐字流动」）：
   - 可流式块（段落、标题、列表项、引用）：开放期逐增量原位重绘，随增长实时可见。
   - 仅定稿块（围栏代码块、缩进代码块、GFM 表格）：开放期不逐字重绘（避免大面积闪烁与滚动擦除），可显示一条可擦除的轻量指示（如「﹏ 代码块…」），闭合时整块绘制。
-  - 块模式由缓冲起始结构判定（首行围栏标记 → 仅定稿块；其余 → 可流式块）。
+  - 块模式由缓冲**起始结构**判定（只看首行，保持确定性）：首行为围栏标记或以 `|` 分隔的表头 → 仅定稿块；其余 → 可流式块。不能因后续行事后重分类，否则会擦掉已上屏的正文。
 - **视图外 cap**：对可流式块，若其当前渲染行数超过注入的视口高度，则停止原位重绘、改为只追加（增量文本直接 `println` 往下走），并据此维持「已滚出内容即终态」的 invariants。视口高度由调用方注入（JLine 交互取 `terminal.getHeight()`，one-shot tty 从探测终端取，缺省保守值）。
 - **纯函数缝保持**：`MarkdownRenderer` 不改，仍为纯函数（输入 markdown/样式/宽度 → 输出文本）；`Style` 仍是 ANSI 常量唯一定义处；流式渲染组件只持有有状态的部分，不读环境、不碰时钟。
 - **管道模式不变**：非 tty 走既有同步路径，零 StreamDelta、零光标控制序列。
@@ -57,8 +57,8 @@ Status: ready-for-agent
 - **单缝原则（主测试缝）**：`BlockStreamer` 是唯一流式渲染缝——给定 `delta`/`flush` 片段序列，断言输出经忠实终端模拟器后的**外显屏幕状态**。这是既有先例 `BlockStreamingResidueTest` 的既有缝，直接继承，不新增缝。
 - **好测试只测外部行为**：断言最终屏幕与流式中途快照（正文可见、无计数器、无裸 markdown、恰一份、无残留、围栏成盒、中断标记、视图外 cap 退化为追加），不断言内部状态（`openRows`、缓冲等实现细节）。用 `TermSim`（忠实模拟 CUU/EL/ED/`\r`/宽字符）把光标控制序列解析为真实屏幕。
 - **被测模块**：`dev.minicode.cli` 的流式渲染组件及其终端模拟器测试；`MarkdownRenderer` 的既有测试另行保持（本规格不改其缝）。
-- **先例**：`BlockStreamingResidueTest`（TermSim + 长文 CJK 文章制品 + 断言终屏无裸 markdown/无重复/无进度残留 + 中断保留 partial）、`BlockStreamerTest`（计数器行为——将被改写为「可见增长」行为）、`EventRendererMarkdownTest`（Markdown 内联/块渲染）、`StreamingRedrawPrototypeTest`（原型验证光标数学——已并入正式规格，抛掷版删除）。
-- **回归测试**：本次诊断固化的 `StreamIncrementalProbeTest`（当前红）转正为回归测试——断言「流式中途正文可见 / 后续增量追加可见」，作为「不再退回计数器治标」的钉。
+- **先例**：`BlockStreamingResidueTest`（TermSim + 长文 CJK 文章制品 + 断言终屏无裸 markdown/无重复/无进度残留 + 中断保留 partial + 表格行不擦正文）、`BlockStreamerTest`（已改写为「可见增长」行为）、`EventRendererMarkdownTest`（Markdown 内联/块渲染）。原型 `StreamingRedrawPrototypeTest` 已删除（光标数学已由正式终端模拟器测试覆盖）。
+- **回归测试**：诊断期的「流式中途正文可见 / 后续增量追加可见、不退化计数器」断言已并入 `BlockStreamerTest`（`firstDeltaErasesPlaceholderAndShowsText` / `streamGrowsAcrossDeltasWithoutCounter`），并以 `BlockStreamingResidueTest.tableShapedLineAfterProseDoesNotEraseProse` 钉住「首行判定、表格形行不擦已上屏正文」。
 - **完成标准**：`mvn test` 全绿（含新回归 + 既有 Markdown 渲染测试零回归）+ 真实网关 tty 冒烟（逐段可见增长 + 生成中 Ctrl-C 中断不退进程 + 长代码块闭合成盒）。
 
 ## Out of Scope

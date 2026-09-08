@@ -241,20 +241,13 @@ public final class BlockStreamer {
         return isTableShape(body);                                         // GFM 表格
     }
 
-    /** 是否是 GFM 表格形状：表头以 | 起且含 ≥2 个 |（提前识别，避免碎片重绘）或其下紧跟 ---/=== 分隔行。 */
+    /** 是否是 GFM 表格形状（按缓冲**起始结构**判定，保持确定性）：首个非空行以 | 起且含 ≥2 个 |。 */
     private static boolean isTableShape(String body) {
-        String[] lines = body.split("\n", -1);
-        for (String line : lines) {
+        for (String line : body.split("\n", -1)) {
             String t = line.trim();
             if (t.isEmpty()) continue;
-            // 表头行：以 | 开头且含 ≥2 个 |（即至少一个单元格分界）→ 提前视为结构性
-            if (t.startsWith("|") && countChar(t, '|') >= 2) return true;
-        }
-        // 兼容表头不以 | 开头：某行含 | 且其下一行是 ---/=== 分隔行（可带 : 对齐标记）
-        for (int i = 0; i + 1 < lines.length; i++) {
-            if (!lines[i].contains("|")) continue;
-            String next = lines[i + 1].trim();
-            if (next.matches("\\|?\\s*:?-{2,}:?\\s*(\\|\\s*:?-{2,}:?\\s*)*\\|?")) return true;
+            // 表头以 | 起且含 ≥2 个 |（至少一个单元格分界）→ 结构性表格；只看首行，避免事后重分类擦掉已上屏内容
+            return t.startsWith("|") && countChar(t, '|') >= 2;
         }
         return false;
     }

@@ -297,5 +297,33 @@ class BlockStreamingResidueTest {
         assertEquals(1, countLines(flat, "inta=1;"), "代码行应恰一次\n" + sim.screen());
         assertFalse(flat.contains("inta=1;inta=1;"), "不应重复\n" + sim.screen());
     }
+
+    @Test
+    void tableShapedLineAfterProseDoesNotEraseProse() {
+        TermSim sim = new TermSim(COLS);
+        Style style = Style.PLAIN;
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        BlockStreamer streamer = new BlockStreamer(style, COLS,
+                new PrintStream(captured, true, StandardCharsets.UTF_8));
+        sim.print(EventRenderer.render(new AgentEvent.TurnStart(1), style, COLS) + "\n");
+
+        // 先来一段普通正文，再跟一行表格形文本：块模式由**首行**判定（仍可流式），不得事后重分类擦掉已上屏正文
+        streamer.delta("这是一段正文");
+        sim.print(captured.toString(StandardCharsets.UTF_8));
+        captured.reset();
+        streamer.delta("，继续说。");
+        sim.print(captured.toString(StandardCharsets.UTF_8));
+        captured.reset();
+        streamer.delta("| Name | Age |\n");
+        sim.print(captured.toString(StandardCharsets.UTF_8));
+        captured.reset();
+        streamer.flush(false);
+        sim.print(captured.toString(StandardCharsets.UTF_8) + "\n");
+        captured.reset();
+
+        String flat = sim.screen().replace("\r", "").replace(" ", "");
+        assertTrue(flat.contains("这是一段正文，继续说。"), "首段正文不应因后续表格形行被擦掉\n" + sim.screen());
+        assertTrue(flat.contains("Name"), "表格形内容应出现\n" + sim.screen());
+    }
 }
 
