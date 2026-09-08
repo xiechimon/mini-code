@@ -2,8 +2,7 @@
 
 > 学习 Claude Code / Pi 底层原理的复刻项目：每个功能先跑通 MVP，再持续优化。
 
-**对齐标的：** `earendil-works/pi` (TS, 100k stars) — pi 本身就是按「先 loop+工具跑通，再叠能力」做的，本项目用 Java 1:1
-翻译其核心。
+**对齐标的：** `earendil-works/pi` (TS, 100k stars) — pi 本身就是按「先 loop+工具跑通，再叠能力」做的。本项目用 Java 对齐其核心抽象（抽象名/边界/语义），并保留已记录的有意简化与偏离（见 `docs/adr/0002`）。
 
 ## 已完成 — MVP1
 
