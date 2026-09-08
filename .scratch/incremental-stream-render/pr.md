@@ -18,13 +18,13 @@ Closes tickets: `issues/01` · `issues/02` · `issues/03` · `issues/04`
 
 ## 验收
 
-`mvn test` 全绿（221 passed）+ 既有 `BlockStreamingResidueTest` 无残留/无重复断言保持绿 + 新增残渣测试（表格/缩进代码开放期不重复）+ 回归测试（流式中途正文可见、不退化计数器）+ 终端模拟器视图外 cap 退化验证。
+`mvn test` 全绿（217 passed）+ 既有 `BlockStreamingResidueTest` 无残留/无重复断言保持绿 + 新增残渣测试（表格/缩进代码开放期不重复）+ 回归测试（流式中途正文可见、不退化计数器）+ 终端模拟器视图外 cap 退化验证。
 
 ## 验收记录
 
-- code-review 双轴通过（Standards / Spec）
-- 修复：由审查发现并修正（见 review 提交）
-- mvn test：221 passed
+- code-review 双轴通过（Standards 头档 pi 对齐路径+擦除收敛 + Spec 表格提前识别均已修）
+- 修复：BlockStreamer 类头补 pi 对齐路径 / 擦除序列收敛为 eraseOpenBlockRegion/erasePlaceholder / 删死代码 completeBlockIfNeeded / redrawToStart 更名 / Main 双 EventSink 收敛为 streamingSink / isTableShape 提前识别表头并清切换残留 / 探针回归并入 BlockStreamerTest（除重）
+- mvn test：217 passed（含既有 BlockStreamingResidueTest 无残留/无重复断言 + 新增表格/缩进代码残渣测试 + 视图外 cap）
 - pty 冒烟：真实流式段落可见增长、Ctrl-C 中断保留 partial + ⏹ 标记、长代码块闭合整块成盒、结构块闭合才定稿
 
 ## 关键设计（取代块级计数器）
