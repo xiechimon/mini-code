@@ -176,7 +176,8 @@ public final class EventRenderer {
         boolean isFirst = !state.hasStreamed();
         String prefix = "";
         if (isFirst) {
-            prefix = Style.cursorUp(1) + Style.ERASE_LINE;
+            // CUU 不改列：先上移到占位行再 \r 回列 0，否则流式文本从「思考中」的列位置起步，整块右移
+            prefix = Style.cursorUp(1) + "\r" + Style.ERASE_LINE;
         }
         state.append(delta);
         return prefix + delta;
@@ -202,11 +203,11 @@ public final class EventRenderer {
         String body = buildMessageBody(msg, style, width);
         if (body.isEmpty()) return "";
         if (state != null && state.hasStreamed()) {
-            int rows = state.rows();
-            if (rows > 0) {
-                String prefix = Style.cursorUp(rows) + Style.ERASE_DOWN;
-                return prefix + body;
-            }
+            // CUU 不改列：重绘前必须 \r 回列 0；上移行数取决于游标在块末行（无尾随换行）还是下一行行首（有尾随换行）
+            boolean trailingNewline = state.buffer().endsWith("\n");
+            int up = Math.max(0, state.rows() - (trailingNewline ? 0 : 1));
+            String prefix = "\r" + Style.cursorUp(up) + Style.ERASE_DOWN;
+            return prefix + body;
         }
         return body;
     }

@@ -115,12 +115,12 @@ class EventRendererStreamingTest {
     void firstDeltaCoversPlaceholderRow() {
         StreamState s = new StreamState(80);
         String first = EventRenderer.render(new AgentEvent.StreamDelta("hi"), plain, 80, s);
-        // 必须恰为 CUU1+EL+delta，无多余
-        assertEquals(Style.cursorUp(1) + Style.ERASE_LINE + "hi", first);
+        // 必须恰为 CUU1+\r+EL+delta：CUU 后需 \r 回列 0（CUU 不改列），否则流式从占位行列位置起步
+        assertEquals(Style.cursorUp(1) + "\r" + Style.ERASE_LINE + "hi", first);
         // 宽度无关，首个始终 CUU1
         StreamState s2 = new StreamState(20);
         String first2 = EventRenderer.render(new AgentEvent.StreamDelta("x"), plain, 20, s2);
-        assertTrue(first2.startsWith("\u001B[1A\u001B[2K"));
+        assertTrue(first2.startsWith("\u001B[1A\r\u001B[2K"));
         assertTrue(first2.endsWith("x"));
     }
 
@@ -137,9 +137,9 @@ class EventRendererStreamingTest {
         Message msg = Message.assistant(List.of(Message.Content.text("final **rendered** text")), "end");
         AgentEvent.MessageEnd me = new AgentEvent.MessageEnd(msg);
         String redraw = EventRenderer.render(me, plain, 10, s);
-        // 应以 CUU 3 + ED 开头
-        String expectedPrefix = Style.cursorUp(3) + Style.ERASE_DOWN;
-        assertTrue(redraw.startsWith(expectedPrefix), "重绘应以 CUU N + ED 开头，实际: " + escape(redraw));
+        // 应以 \r + CUU 2 + ED 开头：buffer 无尾随换行，游标在块末行，上移 rows-1=2 行后回到块首
+        String expectedPrefix = "\r" + Style.cursorUp(2) + Style.ERASE_DOWN;
+        assertTrue(redraw.startsWith(expectedPrefix), "重绘应以 \\r + CUU N-1 + ED 开头，实际: " + escape(redraw));
         assertTrue(redraw.contains("final rendered text") || redraw.contains("final"), "应含 Markdown 渲染后的文本");
         // 去除前缀后应为渲染体
         String body = redraw.substring(expectedPrefix.length());
@@ -218,8 +218,9 @@ class EventRendererStreamingTest {
         Message msg = Message.assistant(List.of(Message.Content.text(text)), "end");
         String out80 = EventRenderer.render(new AgentEvent.MessageEnd(msg), plain, 80, s80);
         String out10 = EventRenderer.render(new AgentEvent.MessageEnd(msg), plain, 10, s10);
-        assertTrue(out80.startsWith(Style.cursorUp(1) + Style.ERASE_DOWN));
-        assertTrue(out10.startsWith(Style.cursorUp(3) + Style.ERASE_DOWN));
+        // buffer 无尾随换行，游标在块末行：上移 rows-1 行后回块首（\r 先回列 0）
+        assertTrue(out80.startsWith("\r" + Style.cursorUp(rows80 - 1) + Style.ERASE_DOWN));
+        assertTrue(out10.startsWith("\r" + Style.cursorUp(rows10 - 1) + Style.ERASE_DOWN));
         assertNotEquals(out80, out10);
     }
 

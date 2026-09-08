@@ -72,7 +72,8 @@ class MainStreamingTest {
         Message msg = Message.assistant(java.util.List.of(Message.Content.text("final text")), "end");
         Main.printEvent(new AgentEvent.MessageEnd(msg), plain, 20, state);
         String out = capturedStr();
-        assertTrue(out.contains(Style.cursorUp(rows) + Style.ERASE_DOWN), "应含重绘序列");
+        // buffer 无尾随换行，游标在块末行：先 \r 回列 0，再上移 rows-1 行回块首
+        assertTrue(out.contains("\r" + Style.cursorUp(rows - 1) + Style.ERASE_DOWN), "应含重绘序列");
         assertTrue(out.contains("final text"));
         // 管道或空 state 不应含重绘
         captured.reset();
