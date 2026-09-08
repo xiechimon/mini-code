@@ -48,7 +48,7 @@
   ，支持 `stopReason` (end/length/error/aborted)
 - 截断策略：Read 工具 `2000行 / 50KB` 先到先截断，与 pi 一致
 - 迭代节奏：每 MVP 一个分支 → PR → code-review 后合 main
-- 版本边界：`main` = 最小 MVP1 内核 + `docs/wiki/`；早期更模块化的快照见 `archive/archify-deep-mod`（43 源文件 + 完整 docs 树）
+- 版本边界：`main` = 最小 MVP1 内核 + `docs/wiki/`
 
 ## 术语
 

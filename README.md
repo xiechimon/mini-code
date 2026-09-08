@@ -56,8 +56,6 @@ dev.minicode.cli   — Main                                                     
 ## git 分支边界
 
 - `main` — 最小 MVP1 内核 + `docs/wiki/`（Pi 学习笔记），当前规范主线。
-- `archive/archify-deep-mod` — 早期一份更模块化的快照（43 个源文件 + 完整 docs 树），只作存档查阅。取回单个文件：
-  `git checkout archive/archify-deep-mod -- <path>`
 
 ## opencode 调研笔记
 
