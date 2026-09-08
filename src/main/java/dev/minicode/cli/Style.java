@@ -40,6 +40,17 @@ public record Style(boolean colorEnabled) {
     public static final String ANSI_UNDERLINE = "\u001B[4m";
     /** ANSI：删除线（用于删除线渲染） */
     public static final String ANSI_STRIKETHROUGH = "\u001B[9m";
+    /** ANSI：光标上移 N 行（CUU，Cursor Up）——手写，参数化 */
+    public static final String CURSOR_UP_FMT = "\u001B[%dA";
+    /** ANSI：清行（EL，Erase in Line，2K 清整行） */
+    public static final String ERASE_LINE = "\u001B[2K";
+    /** ANSI：清除到底部（ED，Erase in Display，J 清光标到底部） */
+    public static final String ERASE_DOWN = "\u001B[J";
+
+    /** 光标上移 N 行的控制序列 */
+    public static String cursorUp(int n) {
+        return String.format(CURSOR_UP_FMT, n);
+    }
     // 便捷别名（对应任务描述 Style.CYAN/RESET 等）
     /** @see #ANSI_RESET */ public static final String RESET = ANSI_RESET;
     /** @see #ANSI_CYAN */ public static final String CYAN = ANSI_CYAN;
