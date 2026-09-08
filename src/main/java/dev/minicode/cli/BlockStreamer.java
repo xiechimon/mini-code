@@ -12,8 +12,9 @@ import java.io.PrintStream;
  * 文本随增长可见。所以滚出视口的内容已是渲染终态、绝不与重绘叠加双份。
  * </p>
  * <p>
- * 仍走 {@link MarkdownRenderer} 纯函数缝；本组件只持有有状态的部分（开放块缓冲、屏幕行数账、
- * 已定稿标记），不读环境、不碰时钟。首增量覆盖 TurnStart 的「思考中」占位行。
+ * 对齐 pi 源：pi-coding-agent 的流式渲染（滚动区内逐行追加而非整块重绘），本项目用「开放块原位重绘 +
+ * 定稿不可变」在行式终端约束下逼近该效果。仍走 {@link MarkdownRenderer} 纯函数缝；本组件只持有有状态的
+ * 部分（开放块缓冲、屏幕行数账、已定稿标记），不读环境、不碰时钟。首增量覆盖 TurnStart 的「思考中」占位行。
  * </p>
  */
 public final class BlockStreamer {
@@ -53,7 +54,7 @@ public final class BlockStreamer {
     public void delta(String d) {
         if (d == null || d.isEmpty()) return;
         if (placeholderPending) {
-            out.print("\r" + Style.cursorUp(1) + Style.ERASE_LINE);   // 覆盖「思考中」占位行
+            erasePlaceholder();
             placeholderPending = false;
         }
         block.append(d);
@@ -71,25 +72,16 @@ public final class BlockStreamer {
     }
 
     /**
-     * 定稿判断：缓冲是否整体构成一个已完成块（空行分界或围栏闭合）。
-     * 兼容旧调用；内部实现已改为逐前缀定稿。
-     */
-    public boolean completeBlockIfNeeded() {
-        return sealCompletedPrefix();
-    }
-
-    /**
      * 终态冲刷：擦除当前开放块（或占位行），打印最后的不完整块（如有）。
      *
      * @param aborted 生成是否被中断（中断时追加 ⏹ 标记）
      */
     public void flush(boolean aborted) {
         if (placeholderPending) {
-            out.print("\r" + Style.cursorUp(1) + Style.ERASE_LINE);
+            erasePlaceholder();
             placeholderPending = false;
-        } else if (!appendMode && openRows > 0) {
-            out.print("\r" + Style.cursorUp(openRows) + Style.ERASE_DOWN);
-            openRows = 0;
+        } else {
+            eraseOpenBlockRegion();
         }
         String buf = block.toString();
         if (!buf.isBlank() && !appendMode) {
@@ -121,8 +113,7 @@ public final class BlockStreamer {
 
     /**
      * 定稿缓冲中最靠后的完整块前缀（仅当缓冲中存在未闭合围栏时才视围栏内部为未完成）。
-     * 从缓冲尾部向前定位到「最后一个完整块边界」之后的偏移，把该前缀一次打印为定稿，
-     * 剩余部分（若有）作为新的开放块。返回是否定稿了任何内容。
+     * 把该前缀一次打印为定稿，剩余部分（若有）作为新的开放块。返回是否定稿了任何内容。
      */
     private boolean sealCompletedPrefix() {
         String buf = block.toString();
@@ -130,7 +121,7 @@ public final class BlockStreamer {
         int sealLen = completedPrefixLength(buf);
         if (sealLen == 0) return false;
         String rest = buf.substring(sealLen);
-        if (appendMode) {                                  // 追加模式：块已流式上屏，定稿不重绘
+        if (appendMode) {                                // 追加模式：块已流式上屏，定稿不重绘
             block.setLength(0);
             block.append(rest);
             if (printedAnyBlock) out.println();
@@ -139,51 +130,57 @@ public final class BlockStreamer {
         }
         String sealed = buf.substring(0, sealLen);
         String rendered = renderBlock(sealed);
-        redrawToStart();
-        if (printedAnyBlock) out.println();               // 块间空行分隔
+        eraseOpenBlockRegion();
+        if (printedAnyBlock) out.println();              // 块间空行分隔
         out.println(rendered);
         printedAnyBlock = true;
         block.setLength(0);
         block.append(rest);
-        openRows = 0;                                     // 剩余部分作为新开放块，尚未上屏
+        openRows = 0;                                    // 剩余部分作为新开放块，尚未上屏
         return true;
     }
 
     /** 原位重绘当前开放块：回本块首行 + 清到底 + 重打印渲染版。结构性块（围栏/缩进代码/表格）不重绘，闭合才成盒/成表。 */
     private void redrawOpenBlock(String d) {
-        if (isStructuralBlock(block.toString())) {        // 结构性块开放期不逐字重绘
+        if (isStructuralBlock(block.toString())) {       // 结构性块开放期不逐字重绘
+            if (openRows > 0) {                          // 此前曾被当作可流式块重绘过部分内容 → 先清除避免残留
+                out.print("\r" + Style.cursorUp(openRows) + Style.ERASE_DOWN);
+            }
             openRows = 0;
             return;
         }
         String rendered = renderBlock(block.toString());
         int rows = renderRows(rendered);
-        if (rows == 0) {                                  // 无可渲染内容：不占屏幕
+        if (rows == 0) {                                 // 无可渲染内容：不占屏幕
             openRows = 0;
             return;
         }
         // 非首块前留一行空行分隔；该分隔与渲染行同属可重绘区域，故计入 openRows
         int totalRows = rows + (printedAnyBlock ? 1 : 0);
-        if (totalRows > viewportRows) {                   // 超出视口：放弃原位重绘（追不回滚出内容）
-            appendMode = true;                            // 转入追加模式
+        if (totalRows > viewportRows) {                  // 超出视口：放弃原位重绘（追不回滚出内容）
+            appendMode = true;                           // 转入追加模式
             openRows = 0;
-            out.print(d);                                 // 本增量原样上屏，不丢内容、不重复
+            out.print(d);                                // 本增量原样上屏，不丢内容、不重复
             out.flush();
             return;
         }
-        if (openRows > 0) {
-            out.print("\r" + Style.cursorUp(openRows) + Style.ERASE_DOWN);
-        }
-        if (printedAnyBlock) out.println();               // 分隔空行（定稿内容与开放块之间）
+        eraseOpenBlockRegion();
+        if (printedAnyBlock) out.println();              // 分隔空行（定稿内容与开放块之间）
         out.print(rendered);
-        out.print("\n");                                  // 游标归位到块后一行的行首
+        out.print("\n");                                 // 游标归位到块后一行的行首
         openRows = totalRows;
     }
 
     /** 擦除当前开放块相位：回列 0 + CUU 回开放块首行 + 清到底。 */
-    private void redrawToStart() {
+    private void eraseOpenBlockRegion() {
         if (openRows > 0) {
             out.print("\r" + Style.cursorUp(openRows) + Style.ERASE_DOWN);
         }
+    }
+
+    /** 擦除「思考中」占位行（游标在占位行下一行处，回列 0 + CUU(1) + 清行）。 */
+    private void erasePlaceholder() {
+        out.print("\r" + Style.cursorUp(1) + Style.ERASE_LINE);
     }
 
     private boolean blockHasContent() {
@@ -218,13 +215,13 @@ public final class BlockStreamer {
         String[] lines = buf.split("\n", -1);
         for (String line : lines) {
             int lineEnd = offset + line.length();
-            int afterLine = lineEnd + 1;                  // 本行 '\n' 之后的位置
+            int afterLine = lineEnd + 1;                 // 本行 '\n' 之后的位置
             boolean isFence = line.stripLeading().startsWith("```");
             if (line.isEmpty()) {
-                if (!inFence) seal = afterLine;           // 空行分界结束前一完整块
+                if (!inFence) seal = afterLine;          // 空行分界结束前一完整块
             } else if (isFence) {
                 inFence = !inFence;
-                if (!inFence) seal = afterLine;           // 闭合围栏 → 代码块完成
+                if (!inFence) seal = afterLine;          // 闭合围栏 → 代码块完成
             }
             offset = afterLine;
         }
@@ -244,14 +241,27 @@ public final class BlockStreamer {
         return isTableShape(body);                                         // GFM 表格
     }
 
-    /** 是否是 GFM 表格形状：某行含 | 且其后紧跟 ---/=== 分隔行（可选 : 对齐标记）。 */
+    /** 是否是 GFM 表格形状：表头以 | 起且含 ≥2 个 |（提前识别，避免碎片重绘）或其下紧跟 ---/=== 分隔行。 */
     private static boolean isTableShape(String body) {
         String[] lines = body.split("\n", -1);
+        for (String line : lines) {
+            String t = line.trim();
+            if (t.isEmpty()) continue;
+            // 表头行：以 | 开头且含 ≥2 个 |（即至少一个单元格分界）→ 提前视为结构性
+            if (t.startsWith("|") && countChar(t, '|') >= 2) return true;
+        }
+        // 兼容表头不以 | 开头：某行含 | 且其下一行是 ---/=== 分隔行（可带 : 对齐标记）
         for (int i = 0; i + 1 < lines.length; i++) {
             if (!lines[i].contains("|")) continue;
             String next = lines[i + 1].trim();
             if (next.matches("\\|?\\s*:?-{2,}:?\\s*(\\|\\s*:?-{2,}:?\\s*)*\\|?")) return true;
         }
         return false;
+    }
+
+    private static int countChar(String s, char c) {
+        int n = 0;
+        for (int i = 0; i < s.length(); i++) if (s.charAt(i) == c) n++;
+        return n;
     }
 }
