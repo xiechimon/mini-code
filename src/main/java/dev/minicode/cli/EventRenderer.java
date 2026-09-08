@@ -164,7 +164,7 @@ public final class EventRenderer {
      * 流式增量渲染：原样直出 + 宽度感知行数记账，首个片段覆盖「思考中」占位行。
      * <p>
      * 保持渲染器纯函数缝不破坏：状态由调用方持有（Main 的 StreamState），此处仅更新并返回带 CUU 的文本。
-     * 首个 StreamDelta 到达时前置「光标上移 1 行+清行」({@code \u001B[1A\u001B[2K}) 覆盖 TurnStart 占位行；
+     * 首个 MessageUpdate 到达时前置「光标上移 1 行+清行」({@code \u001B[1A\u001B[2K}) 覆盖 TurnStart 占位行；
      * 后续片段直接原样直出。管道模式专用：state 为 null 时仅原样返回 delta（无控制序列）；
      * 交互式路径必须传非 null 的 StreamState，否则首片段占位行未被覆盖。
      * </p>

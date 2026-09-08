@@ -35,7 +35,7 @@ src/main/java/dev/minicode/
 2. **Tool 协议** 对齐 pi：`name + description + jsonSchema + execute(id, input, signal)`，返回 `content + details`，`isError` 标记失败
 3. **截断策略**：Read `2000行 / 50KB` 先到先截断，与 pi 一致，见 `Truncate.java`
 4. **消息模型**：`Context = systemPrompt + messages + tools`，`Message` 含 `content/toolCalls/toolResult`，`stopReason` 归一化
-5. **事件**：通过 `AgentEvent + EventSink` 对外发射 `AgentStart/TurnStart/MessageEnd/ToolStart/ToolResultEvent/TurnEnd/AgentEnd`，便于 TUI 接入
+5. **事件**：通过 `AgentEvent + EventSink` 对外发射 `AgentStart/TurnStart/MessageStart/MessageUpdate/MessageEnd/ToolStart/ToolResultEvent/TurnEnd/AgentEnd`（消息生命周期 start/update/end），便于 TUI 接入
 
 ## 编码规范
 

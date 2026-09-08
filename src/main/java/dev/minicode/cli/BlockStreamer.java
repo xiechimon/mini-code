@@ -97,7 +97,7 @@ public final class BlockStreamer {
         }
     }
 
-    /** 轮次重置：清空块缓冲（TurnStart 时调用）。 */
+    /** 消息开始重置：清空块缓冲（MessageStart 时调用，为一条新消息重新武装流式状态）。 */
     public void reset() {
         block.setLength(0);
         openRows = 0;

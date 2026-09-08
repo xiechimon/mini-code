@@ -17,7 +17,7 @@ mini-code 以 `earendil-works/pi`（TS monorepo）为对齐标的。本轮通过
 ## 有意偏离（已记录，不再逐行对齐）
 
 - **流式渲染**：mini-code 用「单开放块 + 原位重绘（CUU+ED）+ 块级定稿」；pi 是滚动区逐行追加、从不回擦。理由：mini-code 无 TUI 的 diff-render，坚持 markdown 渲染（代码盒/表格/标题）就必须整块重算；线式终端下「滚出即不可擦」是硬约束。见 `.scratch/incremental-stream-render/spec.md`。
-- **增量事件简化**：mini-code 以单一 `StreamDelta`（增量子集）+ 完整 `MessageEnd` 近似；pi 是 `message_start / message_update / message_end` 生命周期 + 两层 delta（pi-ai `*_delta` + agent `message_update` partial）。后续拟对齐事件生命周期。
+- **增量事件简化**：mini-code 用 `MessageStart / MessageUpdate / MessageEnd` 三事件（对齐 pi 的 message lifecycle 抽象），但增量走**单层** `MessageUpdate`（原 `StreamDelta`），未拆 pi 的两层 delta（pi-ai `*_delta` + agent `message_update` partial）；`aborted` 作为 `MessageEnd.stopReason`。其余对齐决策见 `.scratch/message-lifecycle/`。
 - **数据模型简化**：`Message` 用单一类 + Role 枚举（pi 为 union）；`Model` 仅 `openai-completions` 一种 api（pi 为 10 种 KnownApi）；工具只 read/write/edit/bash 四件（未用 pi 的 `createAllToolDefinitions` 全集）。
 
 ## Consequences

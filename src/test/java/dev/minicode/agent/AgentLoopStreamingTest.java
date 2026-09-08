@@ -39,14 +39,24 @@ class AgentLoopStreamingTest {
         List<AgentEvent> events = new ArrayList<>();
         loop.run(List.of(Message.user("hi")), events::add);
 
-        // 应有 StreamDelta ×3 + MessageEnd + AgentEnd 等
-        long deltaCount = events.stream().filter(e -> e instanceof AgentEvent.StreamDelta).count();
+        // 应有 MessageUpdate ×3 + MessageEnd + AgentEnd 等
+        long deltaCount = events.stream().filter(e -> e instanceof AgentEvent.MessageUpdate).count();
         assertEquals(3, deltaCount);
         List<String> emitted = events.stream()
-                .filter(e -> e instanceof AgentEvent.StreamDelta)
-                .map(e -> ((AgentEvent.StreamDelta) e).delta())
+                .filter(e -> e instanceof AgentEvent.MessageUpdate)
+                .map(e -> ((AgentEvent.MessageUpdate) e).delta())
                 .toList();
         assertEquals(deltas, emitted);
+        // 消息生命周期：应有 MessageStart ×1，且出现在首个 MessageUpdate 之前
+        assertEquals(1, events.stream().filter(e -> e instanceof AgentEvent.MessageStart).count(),
+                "每条流式消息应恰好一个 MessageStart");
+        int startIdx = -1, firstUpdateIdx = -1;
+        for (int i = 0; i < events.size(); i++) {
+            if (startIdx < 0 && events.get(i) instanceof AgentEvent.MessageStart) startIdx = i;
+            if (firstUpdateIdx < 0 && events.get(i) instanceof AgentEvent.MessageUpdate) firstUpdateIdx = i;
+        }
+        assertTrue(startIdx >= 0 && firstUpdateIdx >= 0 && startIdx < firstUpdateIdx,
+                "MessageStart 应在首个 MessageUpdate 之前");
         // MessageEnd 文本应为累积
         AgentEvent.MessageEnd me = events.stream()
                 .filter(e -> e instanceof AgentEvent.MessageEnd)
@@ -95,7 +105,7 @@ class AgentLoopStreamingTest {
         List<Message> out = loop.run(List.of(Message.user("hi")), events::add);
 
         // 应有 1 个 delta，然后 aborted
-        long deltas = events.stream().filter(e -> e instanceof AgentEvent.StreamDelta).count();
+        long deltas = events.stream().filter(e -> e instanceof AgentEvent.MessageUpdate).count();
         assertEquals(1, deltas);
         AgentEvent.MessageEnd me = events.stream().filter(e -> e instanceof AgentEvent.MessageEnd).map(e -> (AgentEvent.MessageEnd) e).findFirst().orElseThrow();
         assertEquals("aborted", me.message().stopReason);
@@ -121,7 +131,7 @@ class AgentLoopStreamingTest {
         List<AgentEvent> events = new ArrayList<>();
         loop.run(List.of(Message.user("hi")), events::add);
         assertTrue(events.stream().anyMatch(e -> e instanceof AgentEvent.MessageEnd));
-        assertFalse(events.stream().anyMatch(e -> e instanceof AgentEvent.StreamDelta));
+        assertFalse(events.stream().anyMatch(e -> e instanceof AgentEvent.MessageUpdate));
         // 无 aborted
         assertTrue(events.stream().noneMatch(e -> e instanceof AgentEvent.MessageEnd && "aborted".equals(((AgentEvent.MessageEnd) e).message().stopReason)));
     }
@@ -174,7 +184,7 @@ class AgentLoopStreamingTest {
 
     @Test
     void defaultStreamZeroCallbacksIsPipelineEquivalent() throws Exception {
-        // 管道模式走 default stream（零回调）应等价同步，且无 StreamDelta
+        // 管道模式走 default stream（零回调）应等价同步，且无 MessageUpdate
         LlmClient fake = (model, ctx) -> {
             Message m = new Message();
             m.role = Message.Role.assistant;
@@ -185,14 +195,14 @@ class AgentLoopStreamingTest {
         AgentLoop loop = new AgentLoop(fake, Model.opencodeGo("k"), "sys", List.of(), 3);
         List<AgentEvent> events = new ArrayList<>();
         loop.run(List.of(Message.user("hi")), events::add);
-        assertEquals(0, events.stream().filter(e -> e instanceof AgentEvent.StreamDelta).count(), "default stream 不应产生 delta，管道无控制序列");
+        assertEquals(0, events.stream().filter(e -> e instanceof AgentEvent.MessageUpdate).count(), "default stream 不应产生 delta，管道无控制序列");
         AgentEvent.MessageEnd me = events.stream().filter(e -> e instanceof AgentEvent.MessageEnd).map(e -> (AgentEvent.MessageEnd) e).findFirst().orElseThrow();
         assertEquals("sync", me.message().text());
     }
 
     @Test
     void pipelineDisabledStreamingEmitsZeroDeltaAndUsesChatPath() throws Exception {
-        // 管道真正非流式：streamingEnabled=false 时即使 LlmClient 的 stream 会发射 delta，也应零 StreamDelta
+        // 管道真正非流式：streamingEnabled=false 时即使 LlmClient 的 stream 会发射 delta，也应零 MessageUpdate
         LlmClient streamingFake = new LlmClient() {
             @Override public Message chat(Model model, Context context) {
                 Message m = new Message();
@@ -215,7 +225,8 @@ class AgentLoopStreamingTest {
         AgentLoop pipelineLoop = new AgentLoop(streamingFake, model, "sys", List.of(), 3, () -> () -> false, false);
         List<AgentEvent> events = new ArrayList<>();
         pipelineLoop.run(List.of(Message.user("hi")), events::add);
-        assertEquals(0, events.stream().filter(e -> e instanceof AgentEvent.StreamDelta).count(), "管道模式零 StreamDelta 发射");
+        assertEquals(0, events.stream().filter(e -> e instanceof AgentEvent.MessageUpdate).count(), "管道模式零 MessageUpdate 发射");
+        assertEquals(0, events.stream().filter(e -> e instanceof AgentEvent.MessageStart).count(), "管道模式零 MessageStart 发射（零流式事件）");
         AgentEvent.MessageEnd me = events.stream().filter(e -> e instanceof AgentEvent.MessageEnd).map(e -> (AgentEvent.MessageEnd) e).findFirst().orElseThrow();
         assertEquals("sync-fallback", me.message().text(), "管道应走 chat 同步路径而非 stream");
         assertEquals("end", me.message().stopReason);
