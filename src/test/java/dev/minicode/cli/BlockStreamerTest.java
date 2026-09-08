@@ -21,6 +21,12 @@ class BlockStreamerTest {
         return new BlockStreamer(style, width, out);
     }
 
+    private BlockStreamer newStreamer(Style style, int width, int viewportRows) {
+        captured = new ByteArrayOutputStream();
+        PrintStream out = new PrintStream(captured, true, StandardCharsets.UTF_8);
+        return new BlockStreamer(style, width, viewportRows, out);
+    }
+
     private String out() {
         return captured.toString(StandardCharsets.UTF_8);
     }
@@ -109,5 +115,17 @@ class BlockStreamerTest {
         bs.delta("# 标题\n\n");
         String o = out();
         assertTrue(o.contains(Style.ANSI_BOLD) || o.contains(Style.ANSI_CYAN), "有色模式标题应带样式: " + o);
+    }
+
+    @Test
+    void openBlockExceedingViewportEngagesAppendMode() {
+        BlockStreamer bs = newStreamer(Style.PLAIN, 20, 2);
+        bs.delta("这是一段会超出两行视口的普通正文文字，用来验证视图外退化追加。");
+        assertTrue(bs.isAppendMode(), "开放块超过视口高度应转入追加模式，避免 CUU 追不回滚出内容");
+        // 追加模式后续增量仍应继续上屏（不丢内容、不抛异常）
+        String before = out();
+        int lenBefore = before.length();
+        bs.delta("，继续补充内容。");
+        assertTrue(out().length() > lenBefore, "追加模式后续增量应继续上屏");
     }
 }

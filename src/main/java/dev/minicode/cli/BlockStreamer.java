@@ -23,6 +23,11 @@ public final class BlockStreamer {
     private final PrintStream out;
     private final StringBuilder block = new StringBuilder();
 
+    /** 视口高度（行）：开放块渲染行数超过它则放弃原位重绘、转入追加模式。<=0 视为无上限。 */
+    private final int viewportRows;
+    /** 是否已进入「追加模式」：开放块超出视口，CUU+ED 无法安全回滚，改为增量原样上屏。 */
+    private boolean appendMode = false;
+
     /** 当前开放块在屏幕上占用的行数（0 = 尚未上屏）；含可选的块间空行分隔。 */
     private int openRows = 0;
     /** 是否已打印过至少一个定稿块（用于块间空行分隔与首触判断）。 */
@@ -31,9 +36,14 @@ public final class BlockStreamer {
     private boolean placeholderPending = true;
 
     public BlockStreamer(Style style, int width, PrintStream out) {
+        this(style, width, Integer.MAX_VALUE, out);
+    }
+
+    public BlockStreamer(Style style, int width, int viewportRows, PrintStream out) {
         this.style = style == null ? Style.PLAIN : style;
         this.width = AnsiTextUtil.normalizeWidth(width);
         this.out = out;
+        this.viewportRows = viewportRows <= 0 ? Integer.MAX_VALUE : viewportRows;
     }
 
     /**
@@ -52,7 +62,12 @@ public final class BlockStreamer {
             openRows = 0;
             return;
         }
-        redrawOpenBlock();                              // 剩余开放块：原位重绘，正文可见
+        if (appendMode) {                               // 已滚出视口：增量原样上屏，不再重绘
+            out.print(d);
+            out.flush();
+            return;
+        }
+        redrawOpenBlock(d);                             // 剩余开放块：原位重绘，正文可见
     }
 
     /**
@@ -72,16 +87,18 @@ public final class BlockStreamer {
         if (placeholderPending) {
             out.print("\r" + Style.cursorUp(1) + Style.ERASE_LINE);
             placeholderPending = false;
-        } else if (openRows > 0) {
+        } else if (!appendMode && openRows > 0) {
             out.print("\r" + Style.cursorUp(openRows) + Style.ERASE_DOWN);
             openRows = 0;
         }
         String buf = block.toString();
-        if (!buf.isBlank()) {
+        if (!buf.isBlank() && !appendMode) {
             if (printedAnyBlock) out.println();
             out.println(renderBlock(buf));
             printedAnyBlock = true;
             block.setLength(0);
+        } else if (!buf.isBlank()) {
+            block.setLength(0);                          // 追加模式：已流式上屏，不再重绘
         }
         if (aborted) {
             out.println(EventRenderer.maybeColor("⏹ 已中断", Style.ANSI_GRAY, style));
@@ -94,6 +111,12 @@ public final class BlockStreamer {
         openRows = 0;
         printedAnyBlock = false;
         placeholderPending = true;
+        appendMode = false;
+    }
+
+    /** @return 是否已进入追加模式（开放块超出视口，放弃重绘）。 */
+    public boolean isAppendMode() {
+        return appendMode;
     }
 
     /**
@@ -106,8 +129,15 @@ public final class BlockStreamer {
         if (buf.isBlank()) return false;
         int sealLen = completedPrefixLength(buf);
         if (sealLen == 0) return false;
-        String sealed = buf.substring(0, sealLen);
         String rest = buf.substring(sealLen);
+        if (appendMode) {                                  // 追加模式：块已流式上屏，定稿不重绘
+            block.setLength(0);
+            block.append(rest);
+            if (printedAnyBlock) out.println();
+            printedAnyBlock = true;
+            return true;
+        }
+        String sealed = buf.substring(0, sealLen);
         String rendered = renderBlock(sealed);
         redrawToStart();
         if (printedAnyBlock) out.println();               // 块间空行分隔
@@ -120,7 +150,7 @@ public final class BlockStreamer {
     }
 
     /** 原位重绘当前开放块：回本块首行 + 清到底 + 重打印渲染版。结构性块（围栏/缩进代码/表格）不重绘，闭合才成盒/成表。 */
-    private void redrawOpenBlock() {
+    private void redrawOpenBlock(String d) {
         if (isStructuralBlock(block.toString())) {        // 结构性块开放期不逐字重绘
             openRows = 0;
             return;
@@ -133,6 +163,13 @@ public final class BlockStreamer {
         }
         // 非首块前留一行空行分隔；该分隔与渲染行同属可重绘区域，故计入 openRows
         int totalRows = rows + (printedAnyBlock ? 1 : 0);
+        if (totalRows > viewportRows) {                   // 超出视口：放弃原位重绘（追不回滚出内容）
+            appendMode = true;                            // 转入追加模式
+            openRows = 0;
+            out.print(d);                                 // 本增量原样上屏，不丢内容、不重复
+            out.flush();
+            return;
+        }
         if (openRows > 0) {
             out.print("\r" + Style.cursorUp(openRows) + Style.ERASE_DOWN);
         }
