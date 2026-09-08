@@ -15,7 +15,8 @@ public sealed interface AgentEvent permits
         AgentEvent.TurnEnd,
         AgentEvent.MessageEnd,
         AgentEvent.ToolStart,
-        AgentEvent.ToolResultEvent {
+        AgentEvent.ToolResultEvent,
+        AgentEvent.StreamDelta {
 
     /**
      * Agent 开始
@@ -57,5 +58,15 @@ public sealed interface AgentEvent permits
      * 工具执行结果
      */
     record ToolResultEvent(Message.ToolCall toolCall, String output, boolean isError) implements AgentEvent {
+    }
+
+    /**
+     * 流式增量——携带一次文本片段（又名 MessageDelta，见 PR 草稿）。
+     * 对应 spec 的“流式增量”与 CONTEXT.md 的 Stream Delta 术语；协议扩展已获规格授权。
+     * MessageEnd 语义不变（携带最终完整 Message），本事件仅在流式期间逐片段发射。
+     *
+     * @param delta 文本片段（非空时原样直出，终态由 MessageEnd 的完整渲染替换）
+     */
+    record StreamDelta(String delta) implements AgentEvent {
     }
 }

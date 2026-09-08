@@ -12,12 +12,20 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
  * 最小 Agent 循环，忠实对齐 pi 的 packages/agent/src/agent-loop.ts。
  * 简化版：单层循环，不含 steering/followUp，工具顺序执行。
  * 通过 EventSink 对外发射事件，便于观测与后续 TUI 接入。
+ * <p>
+ * 03 票起统一走 {@link LlmClient#stream} 流式路径：每个文本片段回调即发射
+ * {@link AgentEvent.StreamDelta}，片段累积为完整文本后走既有 MessageEnd 路径；
+ * 工具调用分发的完整 JSON 仍从拼装结果取。default stream 在零回调时等价同步，
+ * 因此既有 fake 测试零改动；中断触发器可注入，置位即通过 stream 的取消参数生效。
+ * </p>
  */
 public class AgentLoop {
 
@@ -27,13 +35,27 @@ public class AgentLoop {
     private final String systemPrompt;
     private final List<ToolDefinition> tools;
     private final int maxTurns; // 最大轮次，防止无限循环
+    private final Supplier<InterruptTrigger> triggerSupplier;
 
     public AgentLoop(LlmClient llm, Model model, String systemPrompt, List<ToolDefinition> tools, int maxTurns) {
+        this(llm, model, systemPrompt, tools, maxTurns, (Supplier<InterruptTrigger>) null);
+    }
+
+    /**
+     * 带中断触发器的构造——每次 stream 前通过 supplier 获取触发器，完成后释放。
+     * 触发器通过 {@link InterruptTrigger#isCancelled()} 透传给 {@link LlmClient#stream} 的取消参数；
+     * CLI 的 SIGINT 触发器在 04 票注册，本票仅做抽象与接线。
+     *
+     * @param triggerSupplier 触发器供应方，每次 stream 前调用 {@code get()} 获取，流结束后 {@code close()} 释放；可为 null 表示永不取消
+     */
+    public AgentLoop(LlmClient llm, Model model, String systemPrompt, List<ToolDefinition> tools, int maxTurns,
+                     Supplier<InterruptTrigger> triggerSupplier) {
         this.llm = llm;
         this.model = model;
         this.systemPrompt = systemPrompt;
         this.tools = tools;
         this.maxTurns = maxTurns;
+        this.triggerSupplier = triggerSupplier != null ? triggerSupplier : () -> () -> false;
     }
 
     /**
@@ -65,7 +87,8 @@ public class AgentLoop {
             Context ctx = new Context(systemPrompt, List.copyOf(contextMessages),
                     tools.stream().map(ToolDefinition::toLlmTool).collect(Collectors.toList()));
 
-            Message assistant = llm.chat(model, ctx);
+            Message assistant = streamOnce(ctx, sink);
+
             // 归一化空值
             if (assistant.content == null) assistant.content = List.of();
             if (assistant.stopReason == null) assistant.stopReason = "end";
@@ -74,7 +97,7 @@ public class AgentLoop {
             newMessages.add(assistant);
             if (sink != null) sink.on(new AgentEvent.MessageEnd(assistant));
 
-            // 遇到错误/中断直接结束
+            // 遇到错误/中断直接结束——aborted 时本轮尚未执行的工具调用不执行，循环正常收尾（下一轮可继续）
             if ("error".equals(assistant.stopReason) || "aborted".equals(assistant.stopReason)) {
                 if (sink != null) sink.on(new AgentEvent.TurnEnd(assistant, List.of()));
                 if (sink != null) sink.on(new AgentEvent.AgentEnd(newMessages));
@@ -139,6 +162,85 @@ public class AgentLoop {
 
         if (sink != null) sink.on(new AgentEvent.AgentEnd(newMessages));
         return newMessages;
+    }
+
+    /**
+     * 单次流式调用：每次取一个触发器（置位即取消），完成后释放；
+     * 每个文本片段回调即发射 {@link AgentEvent.StreamDelta}，累积为完整 Message 后返回。
+     * 中断语义：已收文本以 stopReason=aborted 的 partial 进入历史，本轮工具不执行。
+     */
+    private Message streamOnce(Context ctx, EventSink sink) throws Exception {
+        InterruptTrigger trigger = null;
+        Supplier<Boolean> isCancelled = () -> false;
+        if (triggerSupplier != null) {
+            try {
+                trigger = triggerSupplier.get();
+            } catch (Exception e) {
+                log.warn("获取中断触发器失败，按永不取消处理", e);
+                trigger = null;
+            }
+            if (trigger != null) {
+                isCancelled = trigger::isCancelled;
+            }
+        }
+
+        StringBuilder partialBuffer = new StringBuilder();
+        Message result;
+        try {
+            result = llm.stream(model, ctx, delta -> {
+                if (delta != null) {
+                    partialBuffer.append(delta);
+                    if (!delta.isEmpty() && sink != null) {
+                        sink.on(new AgentEvent.StreamDelta(delta));
+                    }
+                }
+            }, isCancelled);
+        } catch (CancellationException ce) {
+            // 触发器导致的取消——返回已收 partial
+            Thread.currentThread().interrupt();
+            result = buildAborted(partialBuffer.toString());
+            log.debug("流式已取消，返回 partial aborted，长度 {}", partialBuffer.length());
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            result = buildAborted(partialBuffer.toString());
+            log.debug("流式被中断，返回 partial aborted");
+        } catch (Exception e) {
+            boolean cancelled = false;
+            try {
+                cancelled = isCancelled.get() || Thread.currentThread().isInterrupted();
+            } catch (Exception ignore) {
+            }
+            if (cancelled) {
+                result = buildAborted(partialBuffer.toString());
+                log.debug("流式异常但已置取消，返回 partial aborted: {}", e.toString());
+            } else {
+                throw e;
+            }
+        } finally {
+            if (trigger != null) {
+                try {
+                    trigger.close();
+                } catch (Exception ignore) {
+                }
+            }
+        }
+
+        // 若流式返回的 aborted 但文本为空，回退使用 partialBuffer（保证已收片段不丢）
+        if (result != null && "aborted".equals(result.stopReason)) {
+            String text = result.text();
+            if ((text == null || text.isEmpty()) && partialBuffer.length() > 0) {
+                result = buildAborted(partialBuffer.toString());
+            }
+        }
+        return result;
+    }
+
+    private static Message buildAborted(String partialText) {
+        Message m = new Message();
+        m.role = Message.Role.assistant;
+        m.content = List.of(Message.Content.text(partialText != null ? partialText : ""));
+        m.stopReason = "aborted";
+        return m;
     }
 
     private ToolDefinition findTool(String name) {
