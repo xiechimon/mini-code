@@ -158,11 +158,11 @@ public final class MarkdownRenderer {
             int w = AnsiTextUtil.visibleLength(l);
             if (w > maxVisible) maxVisible = w;
         }
-        int borderLen = Math.max(3, maxVisible);
-        // 封角边框：┌ + (borderLen+1)个─ + ┐；内容区为“│ ”+内容（左缩进 1），右缘对称
+        // 全封闭盒：内宽 = maxVisible + 2（内容两侧各留 1 空格），四行同宽无缺口
         // 宽度按显示宽度计（CJK/emoji 计 2），否则 CJK 代码行会撑出边框
-        String top = "┌" + "─".repeat(borderLen + 1) + "┐";
-        String bottom = "└" + "─".repeat(borderLen + 1) + "┘";
+        int inner = Math.max(3, maxVisible) + 2;
+        String top = "┌" + "─".repeat(inner) + "┐";
+        String bottom = "└" + "─".repeat(inner) + "┘";
         if (style.colorEnabled()) {
             String grayTop = Style.ANSI_GRAY + top + Style.ANSI_RESET;
             String grayBottom = Style.ANSI_GRAY + bottom + Style.ANSI_RESET;
@@ -170,7 +170,7 @@ public final class MarkdownRenderer {
             sb.append(grayTop);
             for (String line : lines) {
                 sb.append("\n");
-                String content = "│ " + line;
+                String content = "│ " + AnsiTextUtil.padOrTruncateAnsi(line, maxVisible) + " │";
                 sb.append(Style.ANSI_GRAY).append(content).append(Style.ANSI_RESET);
             }
             // 空代码块也需换行分隔上下边线
@@ -181,7 +181,7 @@ public final class MarkdownRenderer {
             sb.append(top);
             for (String line : lines) {
                 sb.append("\n");
-                sb.append("│ ").append(line);
+                sb.append("│ ").append(AnsiTextUtil.padOrTruncateAnsi(line, maxVisible)).append(" │");
             }
             sb.append("\n").append(bottom);
             return sb.toString();

@@ -373,7 +373,9 @@ class MarkdownRendererTest {
         assertEquals(3, lines.length, "代码块不折行，即使宽度极窄也应保持 3 行（上边/内容/下边）");
         assertTrue(lines[0].startsWith("┌"), "首行应为上边线");
         assertTrue(lines[1].startsWith("│ "), "内容行应以 │ 前缀");
-        assertEquals(longLine, lines[1].substring(2), "内容行应完整保留原始行");
+        // 全封闭盒：内容行两侧封闭且内容完整保留
+        assertTrue(strip(lines[1]).startsWith("│ ") && strip(lines[1]).endsWith(" │"), "内容行应两侧封闭: [" + strip(lines[1]) + "]");
+        assertEquals(longLine, strip(lines[1]).substring(2, 102), "内容行应完整保留原始行");
         assertTrue(lines[2].startsWith("└"), "末行应为下边线");
         String c = MarkdownRenderer.render(md, color, 20);
         assertEquals(p, strip(c));
@@ -1292,20 +1294,25 @@ class MarkdownRendererTest {
         String out = MarkdownRenderer.render("```\nbrew upgrade maven\n中文注释\n```\n", color, 80);
         String[] lines = out.split("\n");
         assertEquals(4, lines.length, "应为中心框 4 行");
-        // 右上/右下角封口
+        // 右上/右下角封口；全封闭盒：内容行补右墙
         // 注意：颜色模式下顶/底线被 GRAY 包裹，断言前先剥离 ANSI
         assertTrue(strip(lines[0]).startsWith("┌") && strip(lines[0]).endsWith("┐"), "顶线应封角: " + lines[0]);
         assertTrue(strip(lines[3]).startsWith("└") && strip(lines[3]).endsWith("┘"), "底线应封角: " + lines[3]);
-        // 边框长度 = 最长内容显示宽度 + 左右各 1：maxVisible=18 → ┌+19─+┐ = 21 列
-        assertEquals(21, dw(lines[0]), "顶线显示宽度: " + lines[0]);
-        assertEquals(21, dw(lines[3]), "底线显示宽度: " + lines[3]);
-        // 内容行不超出边框
-        assertTrue(dw(lines[1]) <= dw(lines[0]) && dw(lines[2]) <= dw(lines[0]));
-        // 纯 CJK 内容块：中文两字显示宽 4 → 边框 = 4+2 = 6+1? maxVisible=4 → ┌+5─+┐ = 7 列
+        // 边框：内宽 = maxVisible(18)+2（两侧各 1 空格）→ ┌+20─+┐ = 22 列
+        assertEquals(22, dw(lines[0]), "顶线显示宽度: " + lines[0]);
+        assertEquals(22, dw(lines[3]), "底线显示宽度: " + lines[3]);
+        // 全封闭：内容行显示宽度与边框一致且以右墙结尾，无缺口
+        assertEquals(22, dw(lines[1]), "内容行显示宽度: " + lines[1]);
+        assertTrue(strip(lines[1]).endsWith("│"), "内容行应有右墙: " + strip(lines[1]));
+        assertEquals(22, dw(lines[2]), "内容行显示宽度: " + lines[2]);
+        assertTrue(strip(lines[2]).endsWith("│"), "内容行应有右墙: " + strip(lines[2]));
+        // 纯 CJK 内容块：中文两字显示宽 4 → 内宽 = 4+2 = 6 → ┌+6─+┐ = 8 列，内容行同样封闭
         String cjk = MarkdownRenderer.render("```\n中文\n```\n", plain, 80);
         String[] cl = cjk.split("\n");
-        assertEquals(7, dw(cl[0]), "CJK 内容块顶线应按显示宽度算: " + cl[0]);
+        assertEquals(8, dw(cl[0]), "CJK 内容块顶线应按显示宽度算: " + cl[0]);
         assertTrue(cl[0].endsWith("┐") && cl[2].endsWith("┘"));
+        assertEquals(8, dw(cl[1]), "CJK 内容行显示宽度: " + cl[1]);
+        assertTrue(cl[1].endsWith("│"), "CJK 内容行应有右墙: " + cl[1]);
     }
 
     @Test
