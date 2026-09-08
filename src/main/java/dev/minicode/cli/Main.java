@@ -4,18 +4,26 @@ import dev.minicode.agent.AgentEvent;
 import dev.minicode.agent.AgentLoop;
 import dev.minicode.ai.*;
 import dev.minicode.tools.*;
+import org.jline.keymap.KeyMap;
+import org.jline.reader.Binding;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
+import org.jline.reader.Reference;
 import org.jline.reader.UserInterruptException;
+import org.jline.reader.impl.DefaultParser;
+import org.jline.reader.impl.LineReaderImpl;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 命令行入口，对应 pi-coding-agent 的 cli（极简版）。
@@ -24,6 +32,9 @@ import java.util.List;
  * 优先级：系统环境变量 > .env（从当前目录向上查找） > ~/.local/share/opencode/auth.json
  */
 public class Main {
+
+    /** 提示符字符 */
+    private static final String PROMPT_CHAR = "❯";
 
     public static void main(String[] args) throws Exception {
         // 帮助信息
@@ -55,11 +66,12 @@ public class Main {
         // 无参：REPL 多轮对话模式（解决“第一轮后自动退出”）
         System.out.println("[mini-code] 进入交互式 REPL（输入需求后回车，输入 exit/quit 退出）");
         LlmConfig cfgRepl = LlmConfig.resolve();
+        // 启动横幅一行：mini-code · provider/model · 工作目录（名称粗体、其余暗灰），去色时纯文本
+        Style bannerStyle = Style.detect(System.getenv(), System.console() != null);
+        String banner = EventRenderer.renderBanner(cfgRepl.model().provider(), cfgRepl.model().id(), workdir, bannerStyle);
+        System.out.println(banner);
         if (cfgRepl.apiKey() == null) {
             System.err.println("[mini-code] 警告: 未找到 API Key，请检查 .env 或环境变量");
-        } else {
-            System.out.println("[mini-code] provider=" + cfgRepl.model().provider() + " model=" + cfgRepl.model().id() + " baseUrl=" + cfgRepl.model().baseUrl());
-            System.out.println("[mini-code] 工作目录: " + workdir);
         }
         LlmClient llmRepl = new OpenAiCompatClient(cfgRepl.apiKey());
         Model modelRepl = cfgRepl.model();
@@ -105,14 +117,136 @@ public class Main {
     }
 
     /**
+     * 默认历史文件路径：~/.mini-code/history
+     * <p>
+     * 供 JLine FileHistory 持久化使用，路径可注入（测试用 @TempDir）。
+     * </p>
+     */
+    static Path defaultHistoryPath() {
+        String home = System.getProperty("user.home");
+        if (home == null || home.isEmpty()) {
+            home = ".";
+        }
+        return Path.of(home, ".mini-code", "history");
+    }
+
+    /**
+     * 生成提示符：有色模式下青色，否则纯文本。
+     * <p>
+     * 与 {@link Style} 探测联动：{@code Style.detect(env, isTty)} 决定是否着色。
+     * 复用 {@link Style#colorEnabled()}，零新依赖，手写 ANSI（ANSI 常量收敛至 {@link Style}）。
+     * </p>
+     *
+     * @param style 样式开关（null 时按去色处理）
+     * @return 提示符字符串（含尾空格，供 readLine 直接使用）
+     */
+    static String prompt(Style style) {
+        if (style != null && style.colorEnabled()) {
+            return Style.ANSI_CYAN + PROMPT_CHAR + Style.ANSI_RESET + " ";
+        }
+        return PROMPT_CHAR + " ";
+    }
+
+    /**
+     * 创建带持久化历史与多行支持的 LineReader。
+     * <p>
+     * 配置要点：
+     * - 历史：FileHistory 路径可注入，默认 {@link #defaultHistoryPath()}；禁用时间戳以保持明文可读，增量落盘
+     * - 续行：行尾反斜杠通过 {@link DefaultParser#setEofOnEscapedNewLine(boolean)} 触发二次提示，JLine 自动拼接
+     * - 粘贴：括号粘贴天然支持（BRACKETED_PASTE），对 dumb/ExternalTerminal 额外补绑定以通过测试
+     * </p>
+     *
+     * @param terminal    终端
+     * @param historyPath 历史文件路径（可为 null 表示不持久化）
+     * @return 配置好的 LineReader
+     */
+    static LineReader createReader(Terminal terminal, Path historyPath) throws IOException {
+        if (historyPath != null) {
+            try {
+                Path parent = historyPath.toAbsolutePath().getParent();
+                if (parent != null) {
+                    Files.createDirectories(parent);
+                }
+            } catch (IOException ignored) {
+                // 忽略目录创建失败，后续 save 时会再次尝试
+            }
+        }
+        DefaultParser parser = new DefaultParser();
+        // 行尾反斜杠续行：解析器在行尾为转义字符时抛 EOFError，触发二次提示并拼接
+        parser.setEofOnEscapedNewLine(true);
+        LineReaderBuilder builder = LineReaderBuilder.builder()
+                .terminal(terminal)
+                .parser(parser)
+                .variable(LineReader.HISTORY_FILE, historyPath)
+                .option(LineReader.Option.HISTORY_TIMESTAMPED, false)
+                .option(LineReader.Option.HISTORY_INCREMENTAL, true)
+                .option(LineReader.Option.BRACKETED_PASTE, true);
+        LineReader reader = builder.build();
+        // —— 护栏：为何反射 ——
+        // 背景：JLine 3.27.1 在 dumb/ExternalTerminal 下默认 keyMap 为 "dumb"，未绑定 BRACKETED_PASTE 的 begin 序列 "\u001B[200~"；
+        //       导致多行粘贴（bracketed paste）被拆成多次 readLine 提交，回退到逐行历史。
+        // 做法：通过反射取 LineReaderImpl.keyMaps 中的 "dumb" KeyMap，手动补绑定 "\u001B[200~" → "begin-paste"；
+        //       与 JLine 对 xterm/emacs 的 bindArrowKeys 逻辑保持一致，使 dumb 下粘贴也能整体进缓冲一次提交。
+        // 降级：反射失败（如 JLine 内部字段改名、安全管理器限制）时不抛异常——dumb 粘贴回退为逐行提交，
+        //       但不影响主流程（正常输入、历史持久化、反斜杠续行仍可用）；handleBracketedPasteFallback 兜底。
+        // 可逆性：JLine 后续若在 dumb 上默认支持 bracketed paste，本补丁变为 no-op，可安全移除。
+        if (reader instanceof LineReaderImpl) {
+            try {
+                java.lang.reflect.Field f = LineReaderImpl.class.getDeclaredField("keyMaps");
+                f.setAccessible(true);
+                @SuppressWarnings("unchecked")
+                Map<String, KeyMap<Binding>> keyMaps = (Map<String, KeyMap<Binding>>) f.get(reader);
+                KeyMap<Binding> dumb = keyMaps.get("dumb");
+                if (dumb != null) {
+                    // 为 dumb 补上 begin-paste 绑定，与 emacs 的 bindArrowKeys 保持一致
+                    dumb.bind(new Reference("begin-paste"), "\u001B[200~");
+                }
+            } catch (Exception ignored) {
+                // 反射失败降级：dumb 下粘贴仍会被拆成多次提交，但不影响主流程；外层有 handleBracketedPasteFallback 兜底
+            }
+        }
+        return reader;
+    }
+
+    /**
      * JLine 交互循环：支持方向键编辑与历史，Ctrl-C 放弃当前行，Ctrl-D 退出。
+     * <p>
+     * 使用 {@link #defaultHistoryPath()} 作为历史文件，提示符经 {@link #prompt(Style)} 着色。
+     * </p>
      */
     static void runJLineRepl(Terminal terminal, List<Message> history, AgentLoop loop) throws Exception {
-        LineReader reader = LineReaderBuilder.builder().terminal(terminal).build();
+        runJLineRepl(terminal, history, loop, defaultHistoryPath());
+    }
+
+    /**
+     * JLine 交互循环（历史路径可注入，供测试用 @TempDir）。
+     * <p>
+     * 保持 JLine readLine 语义：Ctrl-C 抛 UserInterruptException（弃行）、Ctrl-D 抛 EndOfFileException（退出）。
+     * 行尾反斜杠与括号粘贴由 LineReader/Parser 天然处理，拼接为一次提交。
+     * </p>
+     *
+     * @param terminal    终端
+     * @param history     对话历史（AgentLoop 上下文）
+     * @param loop        Agent 循环
+     * @param historyPath 历史文件路径（测试可注入临时目录）
+     */
+    static void runJLineRepl(Terminal terminal, List<Message> history, AgentLoop loop, Path historyPath) throws Exception {
+        // 样式探测供提示符着色：复用 Style.detect，与事件渲染同源
+        Style style = Style.detect(System.getenv(), true);
+        // 对 dumb 终端强制去色（TERM=dumb 场景），保持与事件渲染一致
+        // 若终端类型为 dumb，即使 env 未置 TERM，也应去色以免 ANSI 乱码
+        if (terminal != null && "dumb".equals(terminal.getType())) {
+            style = Style.PLAIN;
+        } else if (terminal != null && "dumb-color".equals(terminal.getType())) {
+            style = Style.PLAIN;
+        }
+        String promptStr = prompt(style);
+        LineReader reader = createReader(terminal, historyPath);
+        // JLine 历史在首次 readLine 时 attach 并加载，此后增量落盘
         while (true) {
             String line;
             try {
-                line = reader.readLine("\n> ");
+                line = reader.readLine(promptStr);
             } catch (UserInterruptException e) {
                 continue; // Ctrl-C：放弃当前行，继续下一轮
             } catch (EndOfFileException e) {
@@ -120,6 +254,12 @@ public class Main {
                 break;
             }
             if (line == null) break;
+            // 粘贴多行（dumb 兜底）：若 JLine 未处理括号粘贴标记（dumb 默认不绑定），此处手动剥离标记并拼接
+            // 正常 xterm 下 line 已为 "a\nb\nc" 且不含标记，此分支不触发
+            if (line.contains("\u001B[200~")) {
+                line = handleBracketedPasteFallback(line, reader, promptStr);
+                if (line == null) continue;
+            }
             String trimmed = line.trim();
             if (trimmed.isEmpty()) continue;
             if (isExitCommand(trimmed)) {
@@ -127,7 +267,59 @@ public class Main {
                 break;
             }
             runReplTurn(line, history, loop);
+            // 增量历史已自动落盘，此处显式 save 兜底，确保 @TempDir 测试中文件可见
+            try {
+                reader.getHistory().save();
+            } catch (IOException ignored) {
+            }
         }
+    }
+
+    /**
+     * dumb 终端的括号粘贴兜底：当首行含  ESC[200~ 时，持续读取直到 ESC[201~，拼接为一次提交。
+     * <p>
+     * 正常终端（xterm）下 JLine 已处理，此方法仅在 dumb 反射补丁未生效或未触发时兜底。
+     * </p>
+     */
+    static String handleBracketedPasteFallback(String firstLine, LineReader reader, String prompt) {
+        String begin = "\u001B[200~";
+        String end = "\u001B[201~";
+        int bIdx = firstLine.indexOf(begin);
+        if (bIdx < 0) return firstLine;
+        StringBuilder buf = new StringBuilder();
+        // 去掉起始标记
+        String afterBegin = firstLine.substring(bIdx + begin.length());
+        // 若首行已含结束标记，直接截断
+        int eIdx = afterBegin.indexOf(end);
+        if (eIdx >= 0) {
+            buf.append(afterBegin, 0, eIdx);
+            return buf.toString();
+        }
+        buf.append(afterBegin);
+        // 首行未含结束标记，需继续读取
+        // 若首行后无内容但有换行语义，补一个换行（粘贴多行场景）
+        // 若后继行通过 JLine 括号粘贴已合并，此处不会走到
+        while (true) {
+            String next;
+            try {
+                // 二次提示用空或同提示，保持简单
+                next = reader.readLine("");
+            } catch (UserInterruptException e) {
+                return null;
+            } catch (EndOfFileException e) {
+                break;
+            }
+            if (next == null) break;
+            int endIdx = next.indexOf(end);
+            if (endIdx >= 0) {
+                buf.append("\n").append(next, 0, endIdx);
+                break;
+            } else {
+                // 正常行，追加并补换行
+                buf.append("\n").append(next);
+            }
+        }
+        return buf.toString();
     }
 
     /**
@@ -135,8 +327,11 @@ public class Main {
      */
     static void runScannerRepl(List<Message> history, AgentLoop loop) throws Exception {
         java.util.Scanner scanner = new java.util.Scanner(System.in, StandardCharsets.UTF_8);
+        // 降级也使用 ❯ 提示符，保持一致
+        Style style = Style.detect(System.getenv(), true);
+        String promptStr = prompt(style);
         while (true) {
-            System.out.print("\n> ");
+            System.out.print(promptStr);
             System.out.flush();
             if (!scanner.hasNextLine()) break;
             String line = scanner.nextLine();
@@ -179,30 +374,72 @@ public class Main {
      */
     private static void runOneTurn(String prompt, Path workdir) throws Exception {
         LlmConfig cfg = LlmConfig.resolve();
+        // 启动横幅一行：mini-code · provider/model · 工作目录（名称粗体、其余暗灰），无 key 警告保持走 stderr
+        Style bannerStyle = Style.detect(System.getenv(), System.console() != null);
+        String banner = EventRenderer.renderBanner(cfg.model().provider(), cfg.model().id(), workdir, bannerStyle);
+        System.out.println(banner);
         if (cfg.apiKey() == null) {
             System.err.println("[mini-code] 警告: 未找到 provider " + cfg.model().provider() + " 的 API Key，请设置 " + cfg.model().provider() + " 的 Key（例如 OPENCODE_API_KEY）");
-        } else {
-            System.out.println("[mini-code] provider=" + cfg.model().provider() + " model=" + cfg.model().id() + " baseUrl=" + cfg.model().baseUrl());
         }
         LlmClient llm = new OpenAiCompatClient(cfg.apiKey());
         Model model = cfg.model();
         List<ToolDefinition> tools = List.of(new ReadTool(workdir), new WriteTool(workdir), new EditTool(workdir), new BashTool(workdir));
         AgentLoop loop = new AgentLoop(llm, model, buildSystemPrompt(workdir), tools, 20);
         List<Message> prompts = List.of(Message.user(prompt));
-        System.out.println("[mini-code] 工作目录: " + workdir);
         System.out.println("---");
-        List<Message> result = loop.run(prompts, Main::printEvent);
+        // 轮末统计：耗时由入口计时后注入，工具次数由事件流累计，渲染器不碰时钟（收敛为 TurnStats）
+        long startNanos = System.nanoTime();
+        int[] turns = {0};
+        int[] toolCalls = {0};
+        Style renderStyle = bannerStyle;
+        AgentLoop.EventSink sink = e -> {
+            if (e instanceof AgentEvent.TurnStart) {
+                turns[0]++;
+            } else if (e instanceof AgentEvent.ToolResultEvent) {
+                toolCalls[0]++;
+            }
+            String rendered;
+            if (e instanceof AgentEvent.AgentEnd) {
+                Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
+                rendered = EventRenderer.render(e, renderStyle, TurnStats.of(elapsed, turns[0], toolCalls[0]));
+            } else {
+                rendered = EventRenderer.render(e, renderStyle);
+            }
+            if (rendered == null || rendered.isEmpty()) return;
+            System.out.println(rendered);
+        };
+        List<Message> result = loop.run(prompts, sink);
         result.stream().filter(m -> m.role == Message.Role.assistant).reduce((a, b) -> b).ifPresent(m -> {
             if ("error".equals(m.stopReason)) System.exit(2);
         });
     }
 
     /**
-     * REPL 单轮，带历史
+     * REPL 单轮，带历史（计时与事件流计数在此注入渲染器）
      */
     private static void runReplTurn(String prompt, List<Message> history, AgentLoop loop) throws Exception {
+        Style style = Style.detect(System.getenv(), System.console() != null);
+        long startNanos = System.nanoTime();
+        int[] turns = {0};
+        int[] toolCalls = {0};
+        AgentLoop.EventSink sink = e -> {
+            if (e instanceof AgentEvent.TurnStart) {
+                turns[0]++;
+            } else if (e instanceof AgentEvent.ToolResultEvent) {
+                toolCalls[0]++;
+            }
+            String rendered;
+            if (e instanceof AgentEvent.AgentEnd) {
+                Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
+                rendered = EventRenderer.render(e, style, TurnStats.of(elapsed, turns[0], toolCalls[0]));
+            } else {
+                rendered = EventRenderer.render(e, style);
+            }
+            if (rendered == null || rendered.isEmpty()) return;
+            System.out.println(rendered);
+        };
         List<Message> newPrompts = List.of(Message.user(prompt));
-        List<Message> turnResult = loop.runWithHistory(history, newPrompts, Main::printEvent);
+        List<Message> turnResult = loop.runWithHistory(history, newPrompts, sink);
         history.addAll(turnResult);
         // 保留历史长度控制：超过 50 条则裁剪早期（MVP 简化）
         if (history.size() > 50) {
@@ -211,23 +448,43 @@ public class Main {
         }
     }
 
+    /**
+     * 事件打印：统一经事件渲染器出字（交互与管道两模式共用）。
+     * 样式由 Style.detect 决定，渲染器为纯函数（不读环境、不碰时钟）。
+     */
     private static void printEvent(AgentEvent e) {
-        if (e instanceof AgentEvent.TurnStart t) {
-            System.out.println("\n[第 " + t.turn() + " 轮] 思考中...");
-        } else if (e instanceof AgentEvent.MessageEnd m) {
-            Message msg = m.message();
-            if (msg.role == Message.Role.assistant) {
-                String txt = msg.text();
-                if (!txt.isBlank()) System.out.println(txt);
-                for (Message.ToolCall tc : msg.toolCalls()) {
-                    System.out.println("→ 调用工具: " + tc.name + " " + tc.argumentsJson);
-                }
-            }
-        } else if (e instanceof AgentEvent.ToolResultEvent tr) {
-            System.out.println("← " + tr.toolCall().name + (tr.isError() ? " [失败]" : "") + ": " + truncate(tr.output(), 800));
-        } else if (e instanceof AgentEvent.AgentEnd ae) {
-            System.out.println("\n[mini-code] 完成（共 " + ae.messages().size() + " 条消息）");
-        }
+        // 样式探测：NO_COLOR 非空 / 非 tty / TERM=dumb 任一命中即去色
+        Style style = Style.detect(System.getenv(), System.console() != null);
+        String rendered = EventRenderer.render(e, style);
+        if (rendered == null || rendered.isEmpty()) return;
+        System.out.println(rendered);
+    }
+
+    /**
+     * 供单测与未来耗时注入使用的显式样式入口（包可见）。
+     */
+    static void printEvent(AgentEvent e, Style style) {
+        String rendered = EventRenderer.render(e, style);
+        if (rendered == null || rendered.isEmpty()) return;
+        System.out.println(rendered);
+    }
+
+    /**
+     * 供单测使用的带耗时与计数注入入口（包可见，03 轮末统计——收敛为 TurnStats）。
+     */
+    static void printEvent(AgentEvent e, Style style, Duration elapsed, int turns, int toolCalls) {
+        String rendered = EventRenderer.render(e, style, TurnStats.of(elapsed, turns, toolCalls));
+        if (rendered == null || rendered.isEmpty()) return;
+        System.out.println(rendered);
+    }
+
+    /**
+     * 供单测使用的 TurnStats 入口（包可见）。
+     */
+    static void printEvent(AgentEvent e, Style style, TurnStats stats) {
+        String rendered = EventRenderer.render(e, style, stats);
+        if (rendered == null || rendered.isEmpty()) return;
+        System.out.println(rendered);
     }
 
     /**
