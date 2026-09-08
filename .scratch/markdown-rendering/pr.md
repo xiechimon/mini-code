@@ -1,6 +1,6 @@
 # PR: Markdown 正文渲染
 
-状态: **draft**
+状态: **ready**
 
 Closes: `.scratch/markdown-rendering/spec.md`
 Closes tickets: `issues/01` · `issues/02` · `issues/03`
@@ -11,10 +11,16 @@ Closes tickets: `issues/01` · `issues/02` · `issues/03`
 
 ## Tickets
 
-- [ ] 01 正文渲染管线贯通
-- [ ] 02 块级结构：代码块盒/列表/引用
-- [ ] 03 表格自适应
+- [x] 01 正文渲染管线贯通
+- [x] 02 块级结构：代码块盒/列表/引用
+- [x] 03 表格自适应
 
 ## 验收
 
 `mvn test` 全绿 + 渲染器纯函数两态断言 + pty 实测（含规格中的 Maven 表格痛点样例场景）。
+
+## 验收记录
+
+- code-review 双轴通过（Standards 零硬违规；Spec 全项对齐，删除线改官方扩展）
+- 修复：ext-gfm-strikethrough / 死代码清除 / AnsiTextUtil 收敛 / 宽度归一单点 / 窄宽串色测试
+- mvn test：139 passed
