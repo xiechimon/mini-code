@@ -6,8 +6,8 @@
 
 **Status:** ready-for-agent
 
-- [ ] 流式增量事件入协议；既有事件族零回归
-- [ ] AgentLoop 流式路径：增量×N → MessageEnd(final)，事件顺序可断言
-- [ ] 中断触发器注入：触发后 partial+aborted 进入 history、未执行工具不执行、循环正常收尾
-- [ ] 触发器未触发时行为与现状一致（既有 AgentLoopTest 零回归）
-- [ ] mvn test 全绿
+- [x] 流式增量事件入协议；既有事件族零回归
+- [x] AgentLoop 流式路径：增量×N → MessageEnd(final)，事件顺序可断言
+- [x] 中断触发器注入：触发后 partial+aborted 进入 history、未执行工具不执行、循环正常收尾
+- [x] 触发器未触发时行为与现状一致（既有 AgentLoopTest 零回归）
+- [x] mvn test 全绿

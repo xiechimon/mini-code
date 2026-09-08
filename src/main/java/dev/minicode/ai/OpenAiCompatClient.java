@@ -4,25 +4,45 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
- * OpenAI 兼容的 HTTP 客户端（MVP 非流式版本）。
+ * OpenAI 兼容的 HTTP 客户端（MVP 非流式版本 + 流式扩展）。
  * 负责把 Context 转为 OpenAI Chat Completions 请求，解析助手回复与工具调用。
- * 对应 pi-ai/src/api/openai-completions.ts 的简化版（去掉了流式与重试）。
+ * 对应 pi-ai/src/api/openai-completions.ts 的简化版，扩展了流式与回退。
+ * <p>
+ * 流式：请求体加 stream 标记，JDK HttpClient sendAsync + InputStream 逐行喂给 {@link SseParser}，
+ * 文本增量逐次回调，工具调用 delta 累积拼装为完整 ToolCall；建连失败/解析异常回退一次同步调用并记日志；
+ * 外部取消信号及时中断读取并返回已收部分。
  */
 public class OpenAiCompatClient implements LlmClient {
 
+    private static final Logger log = LoggerFactory.getLogger(OpenAiCompatClient.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private final HttpClient http;
     private final String apiKeyOverride; // 可为空，为空时从 LlmConfig 解析
@@ -107,6 +127,355 @@ public class OpenAiCompatClient implements LlmClient {
         }
 
         return parseResponse(resp.body());
+    }
+
+    // ===== 流式扩展 =====
+
+    @Override
+    public Message stream(Model model, Context context, Consumer<String> onDelta) throws Exception {
+        return stream(model, context, onDelta, () -> false);
+    }
+
+    @Override
+    public Message stream(Model model, Context context, Consumer<String> onDelta, Supplier<Boolean> isCancelled) throws Exception {
+        Supplier<Boolean> cancel = isCancelled != null ? isCancelled : () -> false;
+        Consumer<String> cb = onDelta != null ? onDelta : s -> {
+        };
+        AtomicBoolean fallbackGuard = new AtomicBoolean(false);
+        try {
+            return doStream(model, context, cb, cancel);
+        } catch (CancellationException | InterruptedException e) {
+            // 取消导致的提前退出——返回已收部分（此处尚无累积，返回空 aborted）
+            if (cancel.get() || Thread.currentThread().isInterrupted()) {
+                Thread.currentThread().interrupt();
+                Message m = new Message();
+                m.role = Message.Role.assistant;
+                m.content = List.of(Message.Content.text(""));
+                m.stopReason = "aborted";
+                return m;
+            }
+            throw e;
+        } catch (Exception e) {
+            // 取消不应走回退
+            if (cancel.get() || Thread.currentThread().isInterrupted()) {
+                Message m = new Message();
+                m.role = Message.Role.assistant;
+                m.content = List.of(Message.Content.text(""));
+                m.stopReason = "aborted";
+                return m;
+            }
+            if (!fallbackGuard.compareAndSet(false, true)) {
+                log.warn("已回退过，不二次回退", e);
+                throw e;
+            }
+            log.warn("流式请求失败，回退为非流式: {}", e.toString(), e);
+            try {
+                return chat(model, context);
+            } catch (Exception fallbackEx) {
+                log.warn("回退的非流式请求也失败: {}", fallbackEx.toString(), fallbackEx);
+                Message m = new Message();
+                m.role = Message.Role.assistant;
+                m.content = List.of(Message.Content.text("[mini-code] 流式与回退均失败: " + fallbackEx.getMessage()));
+                m.stopReason = "error";
+                m.errorMessage = fallbackEx.getMessage();
+                return m;
+            }
+        }
+    }
+
+    /**
+     * 真正的流式实现——请求体加 stream 标记，异步 HTTP + 行流喂解析器。
+     * 注意：解析器吃行序列，按行切分时保留 SSE 行边界（BufferedReader.readLine 已提供行边界）。
+     */
+    private Message doStream(Model model, Context context, Consumer<String> onDelta, Supplier<Boolean> isCancelled) throws Exception {
+        if (isCancelled.get() || Thread.currentThread().isInterrupted()) {
+            return buildStreamMessage(new StringBuilder(), new TreeMap<>(), null, true);
+        }
+
+        String apiKey = apiKeyOverride != null ? apiKeyOverride : resolveApiKey(model);
+        if (apiKey == null || apiKey.isBlank()) {
+            Message m = new Message();
+            m.role = Message.Role.assistant;
+            m.content = List.of(Message.Content.text("[mini-code] 缺少 provider " + model.provider() + " 的 API Key，请设置 " + envVarFor(model.provider()) + " 或 OPENCODE_API_KEY"));
+            m.stopReason = "error";
+            m.errorMessage = "缺少 API Key";
+            return m;
+        }
+
+        ObjectNode payload = buildPayload(model, context);
+        payload.put("stream", true);
+        String url = model.baseUrl().replaceAll("/$", "") + "/chat/completions";
+        String body = MAPPER.writeValueAsString(payload);
+
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(120))
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + apiKey)
+                .header("User-Agent", "mini-code/0.1");
+        if (isOpencodeTarget(model)) {
+            builder.header("x-opencode-session", sessionId);
+            builder.header("x-opencode-client", "mini-code");
+        }
+        HttpRequest req = builder.POST(HttpRequest.BodyPublishers.ofString(body)).build();
+
+        CompletableFuture<HttpResponse<InputStream>> future = http.sendAsync(req, HttpResponse.BodyHandlers.ofInputStream());
+
+        // 取消监护线程：轮询 isCancelled，置位时取消 future 并关闭流以中断阻塞读取
+        AtomicBoolean finished = new AtomicBoolean(false);
+        AtomicReference<InputStream> streamRef = new AtomicReference<>();
+        Thread monitor = new Thread(() -> {
+            while (!finished.get()) {
+                if (isCancelled.get() || Thread.currentThread().isInterrupted()) {
+                    CompletableFuture<HttpResponse<InputStream>> f = future;
+                    if (f != null && !f.isDone()) {
+                        f.cancel(true);
+                    }
+                    InputStream s = streamRef.get();
+                    if (s != null) {
+                        try {
+                            s.close();
+                        } catch (IOException ignore) {
+                        }
+                    }
+                    break;
+                }
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        });
+        monitor.setDaemon(true);
+        monitor.start();
+
+        HttpResponse<InputStream> resp;
+        try {
+            resp = future.get();
+        } catch (CancellationException ce) {
+            finished.set(true);
+            monitor.interrupt();
+            if (isCancelled.get() || Thread.currentThread().isInterrupted()) {
+                return buildStreamMessage(new StringBuilder(), new TreeMap<>(), null, true);
+            }
+            throw new IOException("流式建连已取消", ce);
+        } catch (ExecutionException ee) {
+            finished.set(true);
+            monitor.interrupt();
+            if (isCancelled.get() || Thread.currentThread().isInterrupted()) {
+                return buildStreamMessage(new StringBuilder(), new TreeMap<>(), null, true);
+            }
+            Throwable cause = ee.getCause();
+            throw new IOException("流式建连失败: " + (cause != null ? cause.getMessage() : ee.getMessage()), cause != null ? cause : ee);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            finished.set(true);
+            monitor.interrupt();
+            future.cancel(true);
+            if (isCancelled.get() || Thread.currentThread().isInterrupted()) {
+                return buildStreamMessage(new StringBuilder(), new TreeMap<>(), null, true);
+            }
+            throw ie;
+        }
+
+        if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
+            String errorBody = "";
+            try (InputStream err = resp.body()) {
+                if (err != null) errorBody = new String(err.readAllBytes(), StandardCharsets.UTF_8);
+            } catch (Exception ignore) {
+            }
+            finished.set(true);
+            monitor.interrupt();
+            log.warn("流式请求返回非 2xx {}，回退为非流式，body: {}", resp.statusCode(), truncate(errorBody, 500));
+            throw new IOException("流式响应状态异常: " + resp.statusCode() + " body: " + truncate(errorBody, 500));
+        }
+
+        InputStream is = resp.body();
+        streamRef.set(is);
+        BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+
+        StringBuilder textAccum = new StringBuilder();
+        Map<Integer, ToolAccum> toolMap = new TreeMap<>();
+        String[] lastFinishHolder = new String[1];
+        List<String> eventLines = new ArrayList<>();
+        boolean doneSeen = false;
+
+        try {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (isCancelled.get() || Thread.currentThread().isInterrupted()) {
+                    break;
+                }
+                eventLines.add(line);
+                if (line.isEmpty()) {
+                    if (doneSeen) {
+                        eventLines.clear();
+                        continue;
+                    }
+                    boolean hasData = false;
+                    for (String l : eventLines) {
+                        if (l.startsWith("data:")) {
+                            hasData = true;
+                            break;
+                        }
+                    }
+                    if (!hasData) {
+                        // 纯注释/空行事件，无需解析
+                        eventLines.clear();
+                        continue;
+                    }
+                    List<SseParser.Event> evs;
+                    try {
+                        evs = SseParser.parse(new ArrayList<>(eventLines));
+                    } catch (Exception parseEx) {
+                        throw new IOException("SSE 解析异常", parseEx);
+                    }
+                    boolean hasDoneMarkerInThisEvent = false;
+                    for (SseParser.Event ev : evs) {
+                        if (ev instanceof SseParser.TextDelta td) {
+                            textAccum.append(td.text());
+                            try {
+                                onDelta.accept(td.text());
+                            } catch (Exception cbEx) {
+                                log.debug("onDelta 回调异常: {}", cbEx.toString());
+                            }
+                        } else if (ev instanceof SseParser.ToolCallDelta tcd) {
+                            int idx = tcd.index();
+                            ToolAccum acc = toolMap.computeIfAbsent(idx, k -> new ToolAccum());
+                            if (tcd.id() != null) acc.id = tcd.id();
+                            if (tcd.name() != null) acc.name = tcd.name();
+                            if (tcd.argumentsDelta() != null) acc.args.append(tcd.argumentsDelta());
+                        } else if (ev instanceof SseParser.Done d) {
+                            if ("[DONE]".equals(d.raw())) {
+                                hasDoneMarkerInThisEvent = true;
+                                doneSeen = true;
+                            } else {
+                                lastFinishHolder[0] = d.raw();
+                            }
+                        }
+                    }
+                    eventLines.clear();
+                    if (hasDoneMarkerInThisEvent) {
+                        break;
+                    }
+                    if (doneSeen) break;
+                    if (isCancelled.get() || Thread.currentThread().isInterrupted()) break;
+                }
+            }
+            // 末尾未以空行结束的残留事件（少见，但需 flush）
+            if (!eventLines.isEmpty() && !doneSeen) {
+                boolean hasData = false;
+                for (String l : eventLines) if (l.startsWith("data:")) { hasData = true; break; }
+                if (hasData) {
+                    List<SseParser.Event> evs = SseParser.parse(new ArrayList<>(eventLines));
+                    for (SseParser.Event ev : evs) {
+                        if (ev instanceof SseParser.TextDelta td) {
+                            textAccum.append(td.text());
+                            try { onDelta.accept(td.text()); } catch (Exception ignore) {}
+                        } else if (ev instanceof SseParser.ToolCallDelta tcd) {
+                            int idx = tcd.index();
+                            ToolAccum acc = toolMap.computeIfAbsent(idx, k -> new ToolAccum());
+                            if (tcd.id() != null) acc.id = tcd.id();
+                            if (tcd.name() != null) acc.name = tcd.name();
+                            if (tcd.argumentsDelta() != null) acc.args.append(tcd.argumentsDelta());
+                        } else if (ev instanceof SseParser.Done d) {
+                            if (!"[DONE]".equals(d.raw())) lastFinishHolder[0] = d.raw();
+                            else doneSeen = true;
+                        }
+                    }
+                }
+                eventLines.clear();
+            }
+            boolean cancelled = isCancelled.get() || Thread.currentThread().isInterrupted();
+            finished.set(true);
+            monitor.interrupt();
+            return buildStreamMessage(textAccum, toolMap, lastFinishHolder[0], cancelled);
+        } catch (IOException ioe) {
+            finished.set(true);
+            monitor.interrupt();
+            boolean cancelled = isCancelled.get() || Thread.currentThread().isInterrupted();
+            if (cancelled) {
+                return buildStreamMessage(textAccum, toolMap, lastFinishHolder[0], true);
+            }
+            throw ioe;
+        } finally {
+            finished.set(true);
+            monitor.interrupt();
+            try {
+                is.close();
+            } catch (IOException ignore) {
+            }
+        }
+    }
+
+    /** 流式累积的工具调用分片 */
+    private static class ToolAccum {
+        String id;
+        String name;
+        StringBuilder args = new StringBuilder();
+    }
+
+    /**
+     * 根据累积的文本与工具调用拼装完整 Message，stopReason 对齐同步实现的归一化。
+     */
+    private Message buildStreamMessage(StringBuilder textAccum, Map<Integer, ToolAccum> toolMap, String lastFinishReason, boolean cancelled) {
+        List<Message.Content> contents = new ArrayList<>();
+        String text = textAccum.toString();
+        if (!text.isEmpty()) {
+            contents.add(Message.Content.text(text));
+        }
+        // 工具调用按 index 有序拼装
+        for (Map.Entry<Integer, ToolAccum> e : toolMap.entrySet()) {
+            ToolAccum acc = e.getValue();
+            String argsJson = acc.args.length() > 0 ? acc.args.toString() : "{}";
+            Map<String, Object> argsMap = parseArgsJson(argsJson);
+            String id = acc.id != null ? acc.id : "call_" + e.getKey();
+            String name = acc.name != null ? acc.name : "unknown";
+            Message.ToolCall tc = new Message.ToolCall(id, name, argsMap, argsJson);
+            contents.add(Message.Content.toolCall(tc));
+        }
+        if (contents.isEmpty()) {
+            contents.add(Message.Content.text(text));
+        }
+        String stopReason;
+        if (cancelled) {
+            stopReason = "aborted";
+        } else if (!toolMap.isEmpty()) {
+            if ("length".equals(lastFinishReason)) stopReason = "length";
+            else stopReason = "toolCalls";
+        } else {
+            if ("length".equals(lastFinishReason)) stopReason = "length";
+            else if ("tool_calls".equals(lastFinishReason)) stopReason = "toolCalls";
+            else stopReason = "end";
+        }
+        Message out = new Message();
+        out.role = Message.Role.assistant;
+        out.content = contents;
+        out.stopReason = stopReason;
+        return out;
+    }
+
+    private Map<String, Object> parseArgsJson(String json) {
+        if (json == null || json.isBlank()) return Map.of();
+        try {
+            JsonNode node = MAPPER.readTree(json);
+            Map<String, Object> map = new HashMap<>();
+            if (node.isObject()) {
+                node.fields().forEachRemaining(entry -> {
+                    JsonNode v = entry.getValue();
+                    if (v.isTextual()) map.put(entry.getKey(), v.asText());
+                    else if (v.isNumber()) map.put(entry.getKey(), v.numberValue());
+                    else if (v.isBoolean()) map.put(entry.getKey(), v.asBoolean());
+                    else map.put(entry.getKey(), v.toString());
+                });
+            }
+            return map;
+        } catch (Exception e) {
+            log.debug("工具参数 JSON 解析失败（可能为中断导致的截断）: {}", json.length() > 200 ? json.substring(0, 200) + "..." : json);
+            return Map.of();
+        }
     }
 
     /**

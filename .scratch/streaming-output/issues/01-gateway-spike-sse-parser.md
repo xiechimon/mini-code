@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-- [ ] spike 笔记落盘 `.scratch/streaming-output/`：各模型真实响应样例、工具调用 delta 形态、与解析器假设的差异点
-- [ ] SSE 解析器纯函数：行序列 → 事件列表，不碰网络不碰 IO
-- [ ] 测试覆盖：文本增量分片、[DONE] 终止、注释行/空行忽略、非 JSON 行容错、工具调用增量解析（标记为不外发）、跨块 data 拼接
-- [ ] mvn test 全绿，现有功能零回归（本票无行为变更）
+- [x] spike 笔记落盘 `.scratch/streaming-output/`：各模型真实响应样例、工具调用 delta 形态、与解析器假设的差异点
+- [x] SSE 解析器纯函数：行序列 → 事件列表，不碰网络不碰 IO
+- [x] 测试覆盖：文本增量分片、[DONE] 终止、注释行/空行忽略、非 JSON 行容错、工具调用增量解析（标记为不外发）、跨块 data 拼接
+- [x] mvn test 全绿，现有功能零回归（本票无行为变更）
