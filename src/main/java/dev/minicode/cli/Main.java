@@ -266,7 +266,8 @@ public class Main {
                 System.out.println("[mini-code] 再见");
                 break;
             }
-            runReplTurn(line, history, loop);
+            int renderWidth = terminalWidth(terminal);
+            runReplTurn(line, history, loop, style, renderWidth);
             // 增量历史已自动落盘，此处显式 save 兜底，确保 @TempDir 测试中文件可见
             try {
                 reader.getHistory().save();
@@ -392,6 +393,7 @@ public class Main {
         int[] turns = {0};
         int[] toolCalls = {0};
         Style renderStyle = bannerStyle;
+        int renderWidth = resolveWidth(null);
         AgentLoop.EventSink sink = e -> {
             if (e instanceof AgentEvent.TurnStart) {
                 turns[0]++;
@@ -401,9 +403,9 @@ public class Main {
             String rendered;
             if (e instanceof AgentEvent.AgentEnd) {
                 Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-                rendered = EventRenderer.render(e, renderStyle, TurnStats.of(elapsed, turns[0], toolCalls[0]));
+                rendered = EventRenderer.render(e, renderStyle, TurnStats.of(elapsed, turns[0], toolCalls[0]), renderWidth);
             } else {
-                rendered = EventRenderer.render(e, renderStyle);
+                rendered = EventRenderer.render(e, renderStyle, renderWidth);
             }
             if (rendered == null || rendered.isEmpty()) return;
             System.out.println(rendered);
@@ -415,13 +417,27 @@ public class Main {
     }
 
     /**
-     * REPL 单轮，带历史（计时与事件流计数在此注入渲染器）
+     * REPL 单轮，带历史（计时与事件流计数在此注入渲染器）。
+     * 宽度注入：调用方传入终端宽度或管道 80，保持渲染器纯函数。
      */
     private static void runReplTurn(String prompt, List<Message> history, AgentLoop loop) throws Exception {
         Style style = Style.detect(System.getenv(), System.console() != null);
+        int width = resolveWidth(null);
+        runReplTurn(prompt, history, loop, style, width);
+    }
+
+    /**
+     * REPL 单轮（带样式与宽度注入，供 JLine 交互路径复用）。
+     */
+    static void runReplTurn(String prompt, List<Message> history, AgentLoop loop, Style style, int width) throws Exception {
+        if (style == null) style = Style.PLAIN;
+        if (width <= 0) width = 80;
         long startNanos = System.nanoTime();
         int[] turns = {0};
         int[] toolCalls = {0};
+        // 捕获为 effectively final 供 lambda 使用
+        Style s = style;
+        int w = width;
         AgentLoop.EventSink sink = e -> {
             if (e instanceof AgentEvent.TurnStart) {
                 turns[0]++;
@@ -431,9 +447,9 @@ public class Main {
             String rendered;
             if (e instanceof AgentEvent.AgentEnd) {
                 Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-                rendered = EventRenderer.render(e, style, TurnStats.of(elapsed, turns[0], toolCalls[0]));
+                rendered = EventRenderer.render(e, s, TurnStats.of(elapsed, turns[0], toolCalls[0]), w);
             } else {
-                rendered = EventRenderer.render(e, style);
+                rendered = EventRenderer.render(e, s, w);
             }
             if (rendered == null || rendered.isEmpty()) return;
             System.out.println(rendered);
@@ -505,5 +521,40 @@ public class Main {
     private static String truncate(String s, int n) {
         if (s == null) return "";
         return s.length() <= n ? s : s.substring(0, n) + "...";
+    }
+
+    /**
+     * 解析终端宽度：交互取终端宽度，管道固定 80；非法/零宽回退 80。
+     * 纯探测 helper，不读业务状态，失败不抛异常。
+     */
+    static int terminalWidth(Terminal terminal) {
+        if (terminal != null) {
+            try {
+                int w = terminal.getWidth();
+                if (w > 0) return w;
+            } catch (Exception ignored) {
+            }
+        }
+        return 80;
+    }
+
+    /**
+     * 注入宽度解析：有终端取终端宽度，无终端或非 tty 固定 80。
+     * one-shot / 管道路径复用；捕获异常回退 80，保持纯函数调用方不崩。
+     */
+    static int resolveWidth(Terminal terminal) {
+        boolean isTty = System.console() != null;
+        if (!isTty) return 80;
+        if (terminal != null) {
+            int w = terminalWidth(terminal);
+            if (w != 80 || terminal.getWidth() > 0) return w;
+        }
+        // isTty 但未传入终端：尝试按系统终端探测（one-shot 场景）
+        try (Terminal t = TerminalBuilder.builder().system(true).build()) {
+            int w = t.getWidth();
+            if (w > 0) return w;
+        } catch (Exception ignored) {
+        }
+        return 80;
     }
 }
