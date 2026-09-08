@@ -55,7 +55,7 @@
             <version>${jline.version}</version>
         </dependency>
 
-        <!-- Markdown 解析：commonmark 核心 + GFM 表格扩展（ADR-0001，零传递依赖） -->
+        <!-- Markdown 解析：commonmark 核心 + GFM 表格/删除线扩展（ADR-0001，零传递依赖） -->
         <dependency>
             <groupId>org.commonmark</groupId>
             <artifactId>commonmark</artifactId>
@@ -64,6 +64,11 @@
         <dependency>
             <groupId>org.commonmark</groupId>
             <artifactId>commonmark-ext-gfm-tables</artifactId>
+            <version>${commonmark.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.commonmark</groupId>
+            <artifactId>commonmark-ext-gfm-strikethrough</artifactId>
             <version>${commonmark.version}</version>
         </dependency>
 

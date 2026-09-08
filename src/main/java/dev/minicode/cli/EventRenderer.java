@@ -74,7 +74,7 @@ public final class EventRenderer {
      * @return 待打印文本，空字符串表示该事件无需输出（调用方应跳过打印）
      */
     public static String render(AgentEvent event, Style style) {
-        return render(event, style, TurnStats.inferred(null), 80);
+        return render(event, style, TurnStats.inferred(null), AnsiTextUtil.DEFAULT_WIDTH);
     }
 
     /**
@@ -102,7 +102,7 @@ public final class EventRenderer {
      * @return 待打印文本，空字符串表示无需输出
      */
     public static String render(AgentEvent event, Style style, Duration elapsed) {
-        return render(event, style, TurnStats.inferred(elapsed), 80);
+        return render(event, style, TurnStats.inferred(elapsed), AnsiTextUtil.DEFAULT_WIDTH);
     }
 
     /**
@@ -128,7 +128,7 @@ public final class EventRenderer {
      * @return 待打印文本
      */
     public static String render(AgentEvent event, Style style, Duration elapsed, int turns, int toolCalls) {
-        return render(event, style, new TurnStats(elapsed, turns, toolCalls), 80);
+        return render(event, style, new TurnStats(elapsed, turns, toolCalls), AnsiTextUtil.DEFAULT_WIDTH);
     }
 
     /**
@@ -152,7 +152,7 @@ public final class EventRenderer {
      * @return 待打印文本
      */
     public static String render(AgentEvent event, Style style, TurnStats stats) {
-        return render(event, style, stats, 80);
+        return render(event, style, stats, AnsiTextUtil.DEFAULT_WIDTH);
     }
 
     /**
@@ -169,10 +169,10 @@ public final class EventRenderer {
      * @return 待打印文本
      */
     public static String render(AgentEvent event, Style style, TurnStats stats, int width) {
-        // 防御：style 可能为 null 时按去色处理（保持纯文本）；stats 可能为 null 时按推断处理；width 非法时按 80
+        // 防御：style 可能为 null 时按去色处理（保持纯文本）；stats 可能为 null 时按推断处理；width 非法时按默认宽度
         if (style == null) style = Style.PLAIN;
         if (stats == null) stats = TurnStats.inferred(null);
-        if (width <= 0) width = 80;
+        width = AnsiTextUtil.normalizeWidth(width);
 
         if (event instanceof AgentEvent.TurnStart t) {
             String text = "\n[第 " + t.turn() + " 轮] 思考中...";

@@ -431,7 +431,7 @@ public class Main {
      */
     static void runReplTurn(String prompt, List<Message> history, AgentLoop loop, Style style, int width) throws Exception {
         if (style == null) style = Style.PLAIN;
-        if (width <= 0) width = 80;
+        width = AnsiTextUtil.normalizeWidth(width);
         long startNanos = System.nanoTime();
         int[] turns = {0};
         int[] toolCalls = {0};
@@ -524,7 +524,7 @@ public class Main {
     }
 
     /**
-     * 解析终端宽度：交互取终端宽度，管道固定 80；非法/零宽回退 80。
+     * 解析终端宽度：交互取终端宽度，管道固定 80；非法/零宽回退默认宽度。
      * 纯探测 helper，不读业务状态，失败不抛异常。
      */
     static int terminalWidth(Terminal terminal) {
@@ -535,19 +535,19 @@ public class Main {
             } catch (Exception ignored) {
             }
         }
-        return 80;
+        return AnsiTextUtil.DEFAULT_WIDTH;
     }
 
     /**
-     * 注入宽度解析：有终端取终端宽度，无终端或非 tty 固定 80。
-     * one-shot / 管道路径复用；捕获异常回退 80，保持纯函数调用方不崩。
+     * 注入宽度解析：有终端取终端宽度，无终端或非 tty 固定默认宽度。
+     * one-shot / 管道路径复用；捕获异常回退默认宽度，保持纯函数调用方不崩。
      */
     static int resolveWidth(Terminal terminal) {
         boolean isTty = System.console() != null;
-        if (!isTty) return 80;
+        if (!isTty) return AnsiTextUtil.DEFAULT_WIDTH;
         if (terminal != null) {
             int w = terminalWidth(terminal);
-            if (w != 80 || terminal.getWidth() > 0) return w;
+            if (w != AnsiTextUtil.DEFAULT_WIDTH || terminal.getWidth() > 0) return w;
         }
         // isTty 但未传入终端：尝试按系统终端探测（one-shot 场景）
         try (Terminal t = TerminalBuilder.builder().system(true).build()) {
@@ -555,6 +555,6 @@ public class Main {
             if (w > 0) return w;
         } catch (Exception ignored) {
         }
-        return 80;
+        return AnsiTextUtil.DEFAULT_WIDTH;
     }
 }

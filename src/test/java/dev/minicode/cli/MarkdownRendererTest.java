@@ -1134,4 +1134,97 @@ class MarkdownRendererTest {
         int len = strip(lines[0]).length();
         for (String l : lines) assertEquals(len, strip(l).length());
     }
+
+    // ——— 窄宽硬折多样式并发：验证 findActiveAnsi 重开后不串色 ———
+
+    @Test
+    void narrowHardBreakMultiStyleConcurrentNotBleed() {
+        int w = 10;
+        String boldLong = "a".repeat(25);
+        String italicLong = "b".repeat(25);
+        String strikeLong = "c".repeat(25);
+        String codeLong = "d".repeat(25);
+        // 段落包含四种长样式词，窄宽下每个词都会被硬折多行（>w 且无空格可断）
+        String md = "**" + boldLong + "** " + "*" + italicLong + "* " + "~~" + strikeLong + "~~ `" + codeLong + "`";
+        String plainOut = MarkdownRenderer.render(md, plain, w);
+        String colorOut = MarkdownRenderer.render(md, color, w);
+        // 剥离后与去色一致（不串色前提）
+        assertEquals(plainOut, strip(colorOut));
+        for (String line : colorOut.split("\n")) {
+            assertTrue(strip(line).length() <= w, "窄宽多样式每行可见长度应 <= " + w + "，行: [" + strip(line) + "]");
+        }
+        String[] colorLines = colorOut.split("\n");
+        String[] plainLines = plainOut.split("\n");
+        assertEquals(plainLines.length, colorLines.length, "ANSI 不计宽，有色与去色行数应一致");
+        // 硬折重开不串色：按可见内容判断该行应含的唯一活跃样式
+        for (String line : colorLines) {
+            String vis = strip(line);
+            if (vis.isEmpty()) continue;
+            boolean hasA = vis.contains("a");
+            boolean hasB = vis.contains("b");
+            boolean hasC = vis.contains("c");
+            boolean hasD = vis.contains("d");
+            // 窄宽 10 单行仅能容纳单一风格的片段（25 字符拆 3 行），不应同行混色
+            if (hasA && !hasB && !hasC && !hasD) {
+                assertTrue(line.contains(Style.ANSI_BOLD), "粗体硬折行应含 BOLD，行: " + vis);
+                assertFalse(line.contains(Style.ANSI_ITALIC), "粗体行不应串斜体，行: " + vis);
+                assertFalse(line.contains(Style.ANSI_STRIKETHROUGH), "粗体行不应串删除线");
+                assertFalse(line.contains(Style.ANSI_GREEN), "粗体行不应串绿");
+            } else if (hasB && !hasA && !hasC && !hasD) {
+                assertTrue(line.contains(Style.ANSI_ITALIC), "斜体硬折行应含 ITALIC，行: " + vis);
+                assertFalse(line.contains(Style.ANSI_BOLD), "斜体行不应串粗体");
+                assertFalse(line.contains(Style.ANSI_STRIKETHROUGH));
+                assertFalse(line.contains(Style.ANSI_GREEN));
+            } else if (hasC && !hasA && !hasB && !hasD) {
+                assertTrue(line.contains(Style.ANSI_STRIKETHROUGH), "删除线硬折行应含 STRIKETHROUGH，行: " + vis);
+                assertFalse(line.contains(Style.ANSI_BOLD));
+                assertFalse(line.contains(Style.ANSI_ITALIC));
+                assertFalse(line.contains(Style.ANSI_GREEN));
+            } else if (hasD && !hasA && !hasB && !hasC) {
+                assertTrue(line.contains(Style.ANSI_GREEN), "行内代码硬折行应含 GREEN，行: " + vis);
+                assertFalse(line.contains(Style.ANSI_BOLD));
+                assertFalse(line.contains(Style.ANSI_ITALIC));
+                assertFalse(line.contains(Style.ANSI_STRIKETHROUGH));
+            }
+        }
+        // 标题与粗体并发的硬折：标题外层粗体青，内层粗体需在 RESET 后重开标题样式，窄宽下仍不串色
+        String md2 = "# **" + "e".repeat(30) + "** plain";
+        String plain2 = MarkdownRenderer.render(md2, plain, w);
+        String color2 = MarkdownRenderer.render(md2, color, w);
+        assertEquals(plain2, strip(color2));
+        for (String line : color2.split("\n")) {
+            assertTrue(strip(line).length() <= w);
+            if (!strip(line).isBlank()) {
+                assertTrue(line.contains(Style.ANSI_BOLD) && line.contains(Style.ANSI_CYAN),
+                        "标题硬折每行应含标题粗体青，行: " + strip(line));
+            }
+        }
+        // 额外：AnsiTextUtil.wrapAnsi 直接对多样式拼接串的硬折不串色（底层 findActive 重开）
+        String styled = Style.ANSI_BOLD + "x".repeat(20) + Style.ANSI_RESET + " "
+                + Style.ANSI_ITALIC + "y".repeat(20) + Style.ANSI_RESET + " "
+                + Style.ANSI_STRIKETHROUGH + "z".repeat(20) + Style.ANSI_RESET;
+        String wrapped = AnsiTextUtil.wrapAnsi(styled, w);
+        // 裸文本一致性：剥离 ANSI 后，wrap 仅引入换行而不丢失字符；将换行归一为空格后应等于原文 strip
+        String strippedStyled = AnsiTextUtil.stripAnsi(styled);
+        String strippedWrappedNormalized = AnsiTextUtil.stripAnsi(wrapped).replace("\n", " ").replaceAll("\\s+", " ").trim();
+        // 原文 20x + 空格 + 20y + 空格 + 20z => 裹后归一应仍为同一序列（空格可能被折行丢弃一个，但字符总数一致）
+        assertEquals(strippedStyled.replace(" ", ""), strippedWrappedNormalized.replace(" ", ""), "硬折后字符总数应一致");
+        for (String line : wrapped.split("\n")) {
+            assertTrue(AnsiTextUtil.visibleLength(line) <= w, "Ansil wrap 每行可见长度 <= 窄宽，行: [" + AnsiTextUtil.stripAnsi(line) + "]");
+        }
+        // 验证每段硬折行重开对应样式且不串色
+        for (String line : wrapped.split("\n")) {
+            String vis = AnsiTextUtil.stripAnsi(line);
+            if (vis.contains("x")) {
+                assertTrue(line.contains(Style.ANSI_BOLD), "x 段硬折应含 BOLD");
+                assertFalse(line.contains(Style.ANSI_ITALIC) && vis.contains("x") && !vis.contains("y"), "x 行不应串斜体");
+            }
+            if (vis.contains("y") && !vis.contains("x")) {
+                assertTrue(line.contains(Style.ANSI_ITALIC), "y 段硬折应含 ITALIC");
+            }
+            if (vis.contains("z") && !vis.contains("x") && !vis.contains("y")) {
+                assertTrue(line.contains(Style.ANSI_STRIKETHROUGH), "z 段硬折应含 STRIKETHROUGH");
+            }
+        }
+    }
 }
