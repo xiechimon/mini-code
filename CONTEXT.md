@@ -58,6 +58,8 @@
 - Context: `systemPrompt + messages + tools` 三件套
 - 输入编辑器 (Input Editor): REPL 中接收用户输入的行编辑层（JLine），只管输入，不渲染 agent 事件
 - 事件渲染 (Event Rendering): AgentEvent → 终端文本的呈现层，独立于 AgentLoop 协议；本轮聚焦面
-- 等待反馈 (Turn Feedback): 请求发出到响应返回期间的屏幕呈现；本轮范围外，streaming 归 MVP3
+- 等待反馈 (Turn Feedback): 请求发出到响应返回期间的屏幕呈现；由流式增量与生成中断构成，不再依赖轮首占位行
+- 流式增量 (Stream Delta): LLM 逐片段返回的文本增量；流式期间原样直出，终态由正文渲染替换（回退重绘）
+- 生成中断 (Generation Interrupt): 用户在流式期间触发的取消；已生成的 partial 保留（stopReason=aborted）并追加了中断标记，未执行的工具调用不执行
 - 正文渲染 (Markdown Rendering): 助手消息正文的 Markdown→终端文本呈现，事件渲染的子层；颜色仍只标角色，降级规则与事件渲染同源
 - 纯函数渲染缝: 渲染器只吃输入（文本/事件/样式/宽度）出文本，不读环境不碰时钟，单测断言输出字符串
