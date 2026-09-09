@@ -4,14 +4,14 @@
 
 **Blocked by:** None（可立即开始）。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] `AgentEvent` 密封族：新增 `MessageStart`、`StreamDelta`→`MessageUpdate`、`MessageEnd` 保留；`MessageStart/Update/End` 事件可被穷举
-- [ ] `AgentLoop` 对每个助手消息发射 `MessageStart → MessageUpdate×N → MessageEnd`（含中断时 `MessageEnd.stopReason=aborted`）
-- [ ] 旧 `StreamDelta` 命名全库移除，无双轨
-- [ ] `Main` 流式 sink + `BlockStreamer` 按生命周期挂接：`MessageUpdate`→`delta`、`MessageEnd`→`flush(aborted)`、`MessageStart` 标记消息开始（刷新流式状态）
-- [ ] 渲染机制不变：流式中途正文**可见增长**、恰一份、无裸 markdown、无残留、结构性块闭合才成盒、视图外 cap 退化——全部保持绿
-- [ ] 中断（Ctrl-C）保留 partial + 「⏹ 已中断」标记、进程不退出——语义不回归
-- [ ] `MessageStart/MessageUpdate/MessageEnd` 纯函数缝（EventRenderer/MarkdownRenderer）不被破坏
-- [ ] 测试：`AgentLoopStreamingTest` 断言 Start/Update…/End 序列（fake LlmClient 流式）；`MainStreamingTest`/`BlockStreamingResidueTest`（TermSim）在改名后零回归
-- [ ] 全量 `mvn test` 绿；`CONTEXT.md` 词汇（消息生命周期/流式增量→MessageUpdate）协调一致
+- [x] `AgentEvent` 密封族：新增 `MessageStart`、`StreamDelta`→`MessageUpdate`、`MessageEnd` 保留；`MessageStart/Update/End` 事件可被穷举
+- [x] `AgentLoop` 对每个助手消息发射 `MessageStart → MessageUpdate×N → MessageEnd`（含中断时 `MessageEnd.stopReason=aborted`）
+- [x] 旧 `StreamDelta` 命名全库移除，无双轨
+- [x] `Main` 流式 sink + `BlockStreamer` 按生命周期挂接：`MessageUpdate`→`delta`、`MessageEnd`→`flush(aborted)`、`MessageStart` 标记消息开始（刷新流式状态）
+- [x] 渲染机制不变：流式中途正文**可见增长**、恰一份、无裸 markdown、无残留、结构性块闭合才成盒、视图外 cap 退化——全部保持绿
+- [x] 中断（Ctrl-C）保留 partial + 「⏹ 已中断」标记、进程不退出——语义不回归
+- [x] `MessageStart/MessageUpdate/MessageEnd` 纯函数缝（EventRenderer/MarkdownRenderer）不被破坏
+- [x] 测试：`AgentLoopStreamingTest` 断言 Start/Update…/End 序列（fake LlmClient 流式）；`MainStreamingTest`/`BlockStreamingResidueTest`（TermSim）在改名后零回归
+- [x] 全量 `mvn test` 绿；`CONTEXT.md` 词汇（消息生命周期/流式增量→MessageUpdate）协调一致

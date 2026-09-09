@@ -1,6 +1,6 @@
 # Spec: Message Lifecycle（事件层对齐 pi 的 message_start/update/end）
 
-Status: ready-for-agent
+Status: resolved
 
 ## Problem Statement
 
