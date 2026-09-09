@@ -57,7 +57,7 @@ src/main/java/dev/minicode/
 | MVP | 内容 | 验收 |
 | ----- | ------ | ------ |
 | MVP1 | AgentLoop + 4工具 + CLI 单句 | `mvn test` 绿 + 真实文件改动 |
-| MVP2 | Permission/Approve + before/afterToolCall + 并行执行 | 危险操作需确认 |
+| MVP2 | before/afterToolCall 钩子 + 并行执行 | 工具门禁经 beforeToolCall 钩子扩展 |
 | MVP3 | Streaming SSE + Context 压缩/裁剪 + Session JSONL | 长对话不爆 token |
 | MVP4 | PlanMode/Todo + MCP + TUI | — |
 
@@ -65,8 +65,7 @@ src/main/java/dev/minicode/
 
 ## Git 协作
 
-- 分支命名 `mvp2-permission` / `feat/xxx` / `fix/xxx`
-- 提交信息简洁中文或英文均可，关联 MVP 目标
+- 直接在 main 上合入，不另开 feature 分支；提交信息简洁中文或英文均可，关联 MVP 目标
 - 禁止提交 `.env`、`target/`、`.idea/`（已在 `.gitignore`）
 
 ## 常见陷阱

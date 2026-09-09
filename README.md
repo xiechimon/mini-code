@@ -46,7 +46,7 @@ dev.minicode.cli   — Main                                                     
 
 ## 下一步 — 按功能 MVP 迭代
 
-- [ ] **MVP2** Permission/Approve + `beforeToolCall`/`afterToolCall` 钩子 + tool 执行并行
+- [ ] **MVP2** `beforeToolCall`/`afterToolCall` 钩子 + tool 执行并行
 - [ ] **MVP3** Streaming SSE + Context 压缩/裁剪 + Session 持久化 (JSONL)
 - [ ] **MVP4** PlanMode / Todo + MCP + TUI
 

@@ -35,7 +35,7 @@
 
 - MVP1 (当前): AgentLoop + 4工具 (Read/Write/Edit/Bash) + SystemPrompt + CLI 单句执行 `mini-code "xxx"`；验收 =
   真实文件改动 + `mvn test` 绿
-- MVP2: Permission/Approve + before/afterToolCall 钩子
+- MVP2: before/afterToolCall 钩子 + tool 执行并行（权限弹窗为对齐 pi 六 No 的共同省略，见 ADR-0002；门禁如后续需要经 beforeToolCall 钩子作扩展，非内置）
 - MVP3: Context 压缩/Streaming SSE + Session 持久化
 - MVP4+: PlanMode/Todo、MCP、TUI
 
