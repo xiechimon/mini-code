@@ -207,12 +207,8 @@ public final class MarkdownRenderer {
 
     /** 有序列表渲染（深度控制缩进，起始编号来自 OrderedList） */
     private static String renderOrderedList(OrderedList list, Style style, int width, int depth) {
-        int start = list.getStartNumber();
-        if (start == 0) {
-            Integer ms = list.getMarkerStartNumber();
-            if (ms != null) start = ms;
-            else start = 1;
-        }
+        Integer markerStart = list.getMarkerStartNumber(); // getStartNumber() 已过时，用其替代
+        int start = (markerStart != null) ? markerStart : 1;
         StringBuilder sb = new StringBuilder();
         int idx = 0;
         for (Node child = list.getFirstChild(); child != null; child = child.getNext()) {
