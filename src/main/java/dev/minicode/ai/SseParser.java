@@ -46,11 +46,6 @@ public final class SseParser {
         public boolean suppressed() {
             return true;
         }
-
-        /** 与 suppressed 同义，供单测语义化断言 */
-        public boolean shouldEmit() {
-            return false;
-        }
     }
 
     /** 完成——对应 data: [DONE] 或 finish_reason 非空的终止分片 */

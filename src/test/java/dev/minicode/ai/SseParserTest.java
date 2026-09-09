@@ -216,7 +216,6 @@ class SseParserTest {
         assertEquals("read", tc.name());
         assertEquals("", tc.argumentsDelta());
         assertTrue(tc.suppressed());
-        assertFalse(tc.shouldEmit());
     }
 
     @Test

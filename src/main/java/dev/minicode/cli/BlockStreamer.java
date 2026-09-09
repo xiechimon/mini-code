@@ -111,6 +111,16 @@ public final class BlockStreamer {
         return appendMode;
     }
 
+    /** @return 渲染用样式（构造时已归一）。 */
+    public Style style() {
+        return style;
+    }
+
+    /** @return 渲染用终端宽度（构造时已归一）。 */
+    public int width() {
+        return width;
+    }
+
     /**
      * 定稿缓冲中最靠后的完整块前缀（仅当缓冲中存在未闭合围栏时才视围栏内部为未完成）。
      * 把该前缀一次打印为定稿，剩余部分（若有）作为新的开放块。返回是否定稿了任何内容。

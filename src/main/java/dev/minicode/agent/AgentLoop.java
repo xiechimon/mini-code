@@ -219,9 +219,7 @@ public class AgentLoop {
                 }
             }, isCancelled);
         } catch (CancellationException ce) {
-            boolean actuallyCancelled = false;
-            try { actuallyCancelled = isCancelled.get() || Thread.currentThread().isInterrupted(); } catch (Exception ignore) {}
-            if (actuallyCancelled) {
+            if (actuallyCancelled(isCancelled)) {
                 Thread.currentThread().interrupt();
                 result = buildAborted(partialBuffer.toString());
                 log.debug("流式已取消，返回 partial aborted，长度 {}", partialBuffer.length());
@@ -230,9 +228,7 @@ public class AgentLoop {
                 throw ce;
             }
         } catch (InterruptedException ie) {
-            boolean actuallyCancelled = false;
-            try { actuallyCancelled = isCancelled.get() || Thread.currentThread().isInterrupted(); } catch (Exception ignore) {}
-            if (actuallyCancelled) {
+            if (actuallyCancelled(isCancelled)) {
                 Thread.currentThread().interrupt();
                 result = buildAborted(partialBuffer.toString());
                 log.debug("流式被中断，返回 partial aborted");
@@ -242,12 +238,7 @@ public class AgentLoop {
                 throw ie;
             }
         } catch (Exception e) {
-            boolean cancelled = false;
-            try {
-                cancelled = isCancelled.get() || Thread.currentThread().isInterrupted();
-            } catch (Exception ignore) {
-            }
-            if (cancelled) {
+            if (actuallyCancelled(isCancelled)) {
                 result = buildAborted(partialBuffer.toString());
                 log.debug("流式异常但已置取消，返回 partial aborted: {}", e.toString());
             } else {
@@ -278,6 +269,15 @@ public class AgentLoop {
         m.content = List.of(Message.Content.text(partialText != null ? partialText : ""));
         m.stopReason = "aborted";
         return m;
+    }
+
+    /** 判定当前流式是否「真取消」：中断触发器置位或本线程已被中断。异常上下文里读 isCancelled 可能抛异常，吞掉返回 false。 */
+    private boolean actuallyCancelled(Supplier<Boolean> isCancelled) {
+        try {
+            return isCancelled.get() || Thread.currentThread().isInterrupted();
+        } catch (Exception ignore) {
+            return false;
+        }
     }
 
     private ToolDefinition findTool(String name) {

@@ -332,32 +332,10 @@ public class OpenAiCompatClient implements LlmClient {
                     } catch (Exception parseEx) {
                         throw new IOException("SSE 解析异常", parseEx);
                     }
-                    boolean hasDoneMarkerInThisEvent = false;
-                    for (SseParser.Event ev : evs) {
-                        if (ev instanceof SseParser.TextDelta td) {
-                            textAccum.append(td.text());
-                            try {
-                                onDelta.accept(td.text());
-                            } catch (Exception cbEx) {
-                                log.debug("onDelta 回调异常: {}", cbEx.toString());
-                            }
-                        } else if (ev instanceof SseParser.ToolCallDelta tcd) {
-                            int idx = tcd.index();
-                            ToolAccum acc = toolMap.computeIfAbsent(idx, k -> new ToolAccum());
-                            if (tcd.id() != null) acc.id = tcd.id();
-                            if (tcd.name() != null) acc.name = tcd.name();
-                            if (tcd.argumentsDelta() != null) acc.args.append(tcd.argumentsDelta());
-                        } else if (ev instanceof SseParser.Done d) {
-                            if ("[DONE]".equals(d.raw())) {
-                                hasDoneMarkerInThisEvent = true;
-                                doneSeen = true;
-                            } else {
-                                lastFinishHolder[0] = d.raw();
-                            }
-                        }
-                    }
+                    boolean hasDoneMarkerInThisEvent = consumeOutputEvents(evs, onDelta, textAccum, toolMap, lastFinishHolder);
                     eventLines.clear();
                     if (hasDoneMarkerInThisEvent) {
+                        doneSeen = true;
                         break;
                     }
                     if (doneSeen) break;
@@ -370,21 +348,7 @@ public class OpenAiCompatClient implements LlmClient {
                 for (String l : eventLines) if (l.startsWith("data:")) { hasData = true; break; }
                 if (hasData) {
                     List<SseParser.Event> evs = SseParser.parse(new ArrayList<>(eventLines));
-                    for (SseParser.Event ev : evs) {
-                        if (ev instanceof SseParser.TextDelta td) {
-                            textAccum.append(td.text());
-                            try { onDelta.accept(td.text()); } catch (Exception ignore) {}
-                        } else if (ev instanceof SseParser.ToolCallDelta tcd) {
-                            int idx = tcd.index();
-                            ToolAccum acc = toolMap.computeIfAbsent(idx, k -> new ToolAccum());
-                            if (tcd.id() != null) acc.id = tcd.id();
-                            if (tcd.name() != null) acc.name = tcd.name();
-                            if (tcd.argumentsDelta() != null) acc.args.append(tcd.argumentsDelta());
-                        } else if (ev instanceof SseParser.Done d) {
-                            if (!"[DONE]".equals(d.raw())) lastFinishHolder[0] = d.raw();
-                            else doneSeen = true;
-                        }
-                    }
+                    doneSeen = consumeOutputEvents(evs, onDelta, textAccum, toolMap, lastFinishHolder);
                 }
                 eventLines.clear();
             }
@@ -408,6 +372,40 @@ public class OpenAiCompatClient implements LlmClient {
             } catch (IOException ignore) {
             }
         }
+    }
+
+    /**
+     * 消费一批 SSE 事件到累积器：文本增量经 onDelta 回调、工具增量进 toolMap、finish_reason 记入 lastFinishHolder。
+     * 本批是否命中终止分片（data: [DONE]）作为返回值，供调用方决定结束或继续。
+     * 主循环体与末尾「残留事件」两处共用，避免重复的事件分派。
+     */
+    private boolean consumeOutputEvents(List<SseParser.Event> evs, Consumer<String> onDelta,
+                                        StringBuilder textAccum, Map<Integer, ToolAccum> toolMap,
+                                        String[] lastFinishHolder) {
+        boolean sawDoneMarker = false;
+        for (SseParser.Event ev : evs) {
+            if (ev instanceof SseParser.TextDelta td) {
+                textAccum.append(td.text());
+                try {
+                    onDelta.accept(td.text());
+                } catch (Exception cbEx) {
+                    log.debug("onDelta 回调异常: {}", cbEx.toString());
+                }
+            } else if (ev instanceof SseParser.ToolCallDelta tcd) {
+                int idx = tcd.index();
+                ToolAccum acc = toolMap.computeIfAbsent(idx, k -> new ToolAccum());
+                if (tcd.id() != null) acc.id = tcd.id();
+                if (tcd.name() != null) acc.name = tcd.name();
+                if (tcd.argumentsDelta() != null) acc.args.append(tcd.argumentsDelta());
+            } else if (ev instanceof SseParser.Done d) {
+                if ("[DONE]".equals(d.raw())) {
+                    sawDoneMarker = true;
+                } else {
+                    lastFinishHolder[0] = d.raw();
+                }
+            }
+        }
+        return sawDoneMarker;
     }
 
     /** 流式累积的工具调用分片 */

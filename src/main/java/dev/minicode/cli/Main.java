@@ -449,7 +449,7 @@ public class Main {
             java.util.function.Supplier<InterruptTrigger> triggerSupplier = () -> new SigIntInterruptTrigger();
             AgentLoop loop = new AgentLoop(llm, model, buildSystemPrompt(workdir), tools, 20, triggerSupplier);
             BlockStreamer streamer = new BlockStreamer(renderStyle, renderWidth, resolveViewportRows(), System.out);
-            AgentLoop.EventSink sink = streamingSink(streamer, renderStyle, renderWidth, startNanos, turns, toolCalls);
+            AgentLoop.EventSink sink = streamingSink(streamer, startNanos, turns, toolCalls);
             List<Message> result = loop.run(prompts, sink);
             result.stream().filter(m -> m.role == Message.Role.assistant).reduce((a, b) -> b).ifPresent(m -> {
                 if ("error".equals(m.stopReason)) System.exit(2);
@@ -537,7 +537,7 @@ public class Main {
         Style s = style;
         int w = width;
         BlockStreamer streamer = new BlockStreamer(s, w, viewportRows, System.out);
-        AgentLoop.EventSink sink = streamingSink(streamer, s, w, startNanos, turns, toolCalls);
+        AgentLoop.EventSink sink = streamingSink(streamer, startNanos, turns, toolCalls);
         List<Message> newPrompts = List.of(Message.user(prompt));
         List<Message> turnResult = loop.runWithHistory(history, newPrompts, sink);
         history.addAll(turnResult);
@@ -551,12 +551,12 @@ public class Main {
      * 组装流式等待反馈面的输出 sink：块级流式渲染器 + 事件渲染与轮次/工具计数。
      * 供 one-shot tty 与 REPL 交互路径复用，避免两处重复的事件分发逻辑。
      */
-    private static AgentLoop.EventSink streamingSink(BlockStreamer streamer, Style style, int width,
+    private static AgentLoop.EventSink streamingSink(BlockStreamer streamer,
                                                      long startNanos, int[] turns, int[] toolCalls) {
         return e -> {
             if (e instanceof AgentEvent.TurnStart) {
                 turns[0]++;
-                String rendered = EventRenderer.render(e, style, width);
+                String rendered = EventRenderer.render(e, streamer.style(), streamer.width());
                 if (rendered == null || rendered.isEmpty()) return;
                 System.out.println(rendered);
                 return;
@@ -571,14 +571,14 @@ public class Main {
                 return;
             } else if (e instanceof AgentEvent.AgentEnd ae) {
                 Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-                String rendered = EventRenderer.render(ae, style, TurnStats.of(elapsed, turns[0], toolCalls[0]), width);
+                String rendered = EventRenderer.render(ae, streamer.style(), TurnStats.of(elapsed, turns[0], toolCalls[0]), streamer.width());
                 if (rendered == null || rendered.isEmpty()) return;
                 System.out.println(rendered);
                 return;
             } else if (e instanceof AgentEvent.ToolResultEvent) {
                 toolCalls[0]++;
             }
-            String rendered = EventRenderer.render(e, style, width);
+            String rendered = EventRenderer.render(e, streamer.style(), streamer.width());
             if (rendered == null || rendered.isEmpty()) return;
             System.out.println(rendered);
         };
