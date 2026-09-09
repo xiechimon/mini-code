@@ -47,7 +47,7 @@
 - AgentLoop 对齐 `pi/packages/agent/src/agent-loop.ts`: `prompts → streamAssistantResponse → toolCalls → execute → loop`
   ，支持 `stopReason` (end/length/error/aborted)
 - 截断策略：Read 工具 `2000行 / 50KB` 先到先截断，与 pi 一致
-- 迭代节奏：每 MVP 一个分支 → PR → code-review 后合 main
+- 迭代节奏：直接提交合入 main，验证靠 mvn test 全绿
 - 版本边界：`main` = 最小 MVP1 内核 + `docs/wiki/`
 
 ## 术语

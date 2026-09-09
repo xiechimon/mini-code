@@ -61,7 +61,7 @@ src/main/java/dev/minicode/
 | MVP3 | Streaming SSE + Context 压缩/裁剪 + Session JSONL | 长对话不爆 token |
 | MVP4 | PlanMode/Todo + MCP + TUI | — |
 
-每 MVP 单分支 → PR → `code-review` skill 双轴审查（Standards/Spec）后合 main。
+直接提交合入 main，验证靠 `mvn test` 全绿。
 
 ## Git 协作
 

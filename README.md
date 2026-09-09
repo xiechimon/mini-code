@@ -50,11 +50,11 @@ dev.minicode.cli   — Main                                                     
 - [ ] **MVP3** Streaming SSE + Context 压缩/裁剪 + Session 持久化 (JSONL)
 - [ ] **MVP4** PlanMode / Todo + MCP + TUI
 
-每 MVP 一个分支 → PR → code-review 后合 main。
+直接提交合入 main，改动验证靠 mvn test 全绿。
 
-## git 分支边界
+## 开发流
 
-- `main` — 最小 MVP1 内核 + `docs/wiki/`（Pi 学习笔记），当前规范主线。
+- 直接提交合入 `main`（改动验证靠 `mvn test` 全绿）；`main` 承载最小 MVP 内核 + `docs/wiki/`（Pi 学习笔记）。
 
 ## opencode 调研笔记
 
