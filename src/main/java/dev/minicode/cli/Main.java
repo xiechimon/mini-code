@@ -4,6 +4,8 @@ import dev.minicode.agent.AgentEvent;
 import dev.minicode.agent.AgentLoop;
 import dev.minicode.agent.InterruptTrigger;
 import dev.minicode.ai.*;
+import dev.minicode.session.SessionHistory;
+import dev.minicode.session.SessionManager;
 import dev.minicode.tools.*;
 import sun.misc.Signal;
 import sun.misc.SignalHandler;
@@ -124,7 +126,16 @@ public class Main {
         // REPL 的流式触发器：交互式流式期间注册 SIGINT 映射到取消信号，结束后注销恢复原语义
         java.util.function.Supplier<InterruptTrigger> replTriggerSupplier = () -> new SigIntInterruptTrigger();
         AgentLoop loopRepl = new AgentLoop(llmRepl, modelRepl, buildSystemPrompt(workdir), toolsRepl, 20, replTriggerSupplier);
-        List<Message> history = new ArrayList<>();
+        // 会话持久化：REPL 多轮 append-only 树；建会话失败则降级为纯内存 history（不中断 REPL）
+        SessionManager session = null;
+        try {
+            String home = System.getProperty("user.home");
+            if (home == null || home.isEmpty()) home = ".";
+            session = SessionManager.create(Path.of(home, ".mini-code"), workdir.toString());
+        } catch (IOException e) {
+            System.err.println("[mini-code] 会话初始化失败（降级为不持久化）: " + e.getMessage());
+        }
+        List<Message> history = session != null ? new SessionHistory(session) : new ArrayList<>();
         // 区分管道 vs 交互式终端：System.console()==null 表示管道/重定向，此时一次性读完所有行后退出，避免 hasNextLine 阻塞
         if (System.console() == null) {
             // 管道模式：一次性读取 stdin 所有内容，按行处理；不启用流式与重绘，走同步路径，零流式事件

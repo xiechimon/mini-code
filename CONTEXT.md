@@ -64,6 +64,7 @@
 - 对齐 pi (Alignment as Reference): mini-code 以 pi 为参照，但对齐的是抽象、边界与语义（名称/形状），不机械复制类型或实现；与 pi 不同处作有意偏离并记录，见 `docs/adr/0002`
 - 有意偏离 (Deliberate Deviation): mini-code 主动选择与 pi 不同且有明确理由的做法（如无 TUI → 流式用原位重绘渲染 markdown 块；增量简化为单一 MessageUpdate；Message 用单一类+Role）。每处需在 ADR/类头注明「对齐 pi X，但有意简化为 Y」
 - 消息生命周期 (Message Lifecycle): 一条助手消息从开始到结束的三事件 `MessageStart / MessageUpdate / MessageEnd`，对齐 pi 的 `message_start/update/end`；增量走**单层** `MessageUpdate`（原 `StreamDelta` 改名，不拆 pi 的两层 delta）；`aborted` 作为 `MessageEnd` 的 stopReason 变体（中断仍是一段消息的结束，非额外事件）；`MessageEnd` 携带最终完整消息、语义不变
-- 追加式会话树 (Append-only Session Tree): 会话持久化用追加式 JSONL 树（每条记录带 `id`/`parentId` 构成树、`leaf` 指针定当前对话位置、branch/compact/resume 均为指针/新增操作），对齐 pi 的 SessionManager
+- 追加式会话树 (Append-only Session Tree): 会话持久化用追加式 JSONL 树——每条记录带 `id`/`parentId` 建树、`leaf` 指针定当前、branch/compact/resume 均为指针/新增操作、历史从不修改；记录 `id` 用 **8-hex 短 ID**（碰撞重试→UUID，对齐 pi）；会话标识为 **文件头独立 uuid**，与网关路由 id（`x-opencode-session`）分开；会话按 **cwd 分桶** 存 `sessions/--<cwd 编码>--/`；`leaf` 取**物理行序最后记录**。对齐 pi 的 SessionManager
+- 持久化单元 (Persistence Unit): 一条「已完成消息」记录（含消息文本、stopReason、工具调用与结果）；`MessageUpdate` 是**瞬时展示增量、不落盘**，只落最终态
 - 正文渲染 (Markdown Rendering): 助手消息正文的 Markdown→终端文本呈现，事件渲染的子层；颜色仍只标角色，降级规则与事件渲染同源
 - 纯函数渲染缝: 渲染器只吃输入（文本/事件/样式/宽度）出文本，不读环境不碰时钟，单测断言输出字符串
