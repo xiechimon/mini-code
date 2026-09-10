@@ -36,7 +36,7 @@
 - MVP1 (当前): AgentLoop + 4工具 (Read/Write/Edit/Bash) + SystemPrompt + CLI 单句执行 `mini-code "xxx"`；验收 =
   真实文件改动 + `mvn test` 绿
 - MVP2: before/afterToolCall 钩子 + tool 执行并行（权限弹窗为对齐 pi 六 No 的共同省略，见 ADR-0002；门禁如后续需要经 beforeToolCall 钩子作扩展，非内置）
-- MVP3: Context 压缩/Streaming SSE + Session 持久化
+- MVP3: Streaming SSE + Session 持久化 + Context 压缩/裁剪
 - MVP4+: PlanMode/Todo、MCP、TUI
 
 ## 关键设计决策
@@ -66,5 +66,9 @@
 - 消息生命周期 (Message Lifecycle): 一条助手消息从开始到结束的三事件 `MessageStart / MessageUpdate / MessageEnd`，对齐 pi 的 `message_start/update/end`；增量走**单层** `MessageUpdate`（原 `StreamDelta` 改名，不拆 pi 的两层 delta）；`aborted` 作为 `MessageEnd` 的 stopReason 变体（中断仍是一段消息的结束，非额外事件）；`MessageEnd` 携带最终完整消息、语义不变
 - 追加式会话树 (Append-only Session Tree): 会话持久化用追加式 JSONL 树——每条记录带 `id`/`parentId` 建树、`leaf` 指针定当前、branch/compact/resume 均为指针/新增操作、历史从不修改；记录 `id` 用 **8-hex 短 ID**（碰撞重试→UUID，对齐 pi）；会话标识为 **文件头独立 uuid**，与网关路由 id（`x-opencode-session`）分开；会话按 **cwd 分桶** 存 `sessions/--<cwd 编码>--/`；`leaf` 取**物理行序最后记录**。对齐 pi 的 SessionManager
 - 持久化单元 (Persistence Unit): 一条「已完成消息」记录（含消息文本、stopReason、工具调用与结果）；`MessageUpdate` 是**瞬时展示增量、不落盘**，只落最终态
+- 上下文压缩 (Context Compaction): 上下文超阈值时把「旧历史」折成一条结构化摘要（`<summary>` 消息），「最近段」原样保留；完整历史仍存 JSONL 树（append-only），**压缩仅改上下文视图、不删原文**。触发混合：阈值自动（`contextTokens > contextWindow − reserveTokens`）+ 手动命令 `/compact`；JSONL 落 `compaction` 条目（`summary / firstKeptEntryId / tokensBefore`），对齐 pi
+- 摘要因 (Summarization Mutation): 压缩时对内存历史视图的替换操作；仅缩上下文窗口、不动 JSONL「会话文件」（source of truth），由此消除旧的 cap-50 直接丢弃
+- 上下文预算 (Context Budget): 模型上下文窗口（`contextWindow`）、预留（`reserveTokens`）、保留段（`keepRecentTokens`）三元组，是触发的面值；通过 `CompactionConfig` 常量类配置（对齐 pi 默认 `reserve=16384 / keepRecent=20000`）
+- 压缩摘要格式 (Compaction Summary Format): LLM 生成的结构化检查点文本——**对齐 pi 的 6 段检查点**（`Goal / Constraints / Progress / Key Decisions / Next Steps / Critical Context`）但**有意简化为 4 段**（`Goal / Progress / Key Decisions / Next`），落在 `<summary>` 消息里供上下文视图打头用
 - 正文渲染 (Markdown Rendering): 助手消息正文的 Markdown→终端文本呈现，事件渲染的子层；颜色仍只标角色，降级规则与事件渲染同源
 - 纯函数渲染缝: 渲染器只吃输入（文本/事件/样式/宽度）出文本，不读环境不碰时钟，单测断言输出字符串

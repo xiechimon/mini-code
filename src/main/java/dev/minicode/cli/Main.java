@@ -519,10 +519,6 @@ public class Main {
         List<Message> newPrompts = List.of(Message.user(prompt));
         List<Message> turnResult = loop.runWithHistory(history, newPrompts, sink);
         history.addAll(turnResult);
-        if (history.size() > 50) {
-            int toRemove = history.size() - 50;
-            history.subList(0, toRemove).clear();
-        }
     }
 
     /**
@@ -547,10 +543,6 @@ public class Main {
         List<Message> newPrompts = List.of(Message.user(prompt));
         List<Message> turnResult = loop.runWithHistory(history, newPrompts, sink);
         history.addAll(turnResult);
-        if (history.size() > 50) {
-            int toRemove = history.size() - 50;
-            history.subList(0, toRemove).clear();
-        }
     }
 
     /**

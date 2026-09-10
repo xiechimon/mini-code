@@ -19,14 +19,20 @@ public final class SessionEntry {
 
     public static final String TYPE_SESSION = "session";
     public static final String TYPE_MESSAGE = "message";
+    public static final String TYPE_COMPACTION = "compaction";
 
-    public String type;        // 判别器："session" | "message"
-    public String id;          // 记录 id：头=会话 uuid；message=8-hex 短 id
+    public String type;        // 判别器："session" | "message" | "compaction"
+    public String id;          // 记录 id：头=会话 uuid；message=8-hex 短 id；compaction=8-hex 短 id
     public String parentId;    // 树父节点 id（根/头为 null）
     public String timestamp;   // ISO 8601
 
     /** message 条目载荷 */
     public Message message;
+
+    /** compaction 条目载荷（见 {@code docs/adr/0004}）。summary 与 message 互斥使用。 */
+    public String summary;
+    public String firstKeptEntryId;
+    public Integer tokensBefore;
 
     /** session 头扩展字段 */
     public Integer version;
@@ -55,6 +61,20 @@ public final class SessionEntry {
         e.id = id;
         e.parentId = parentId;
         e.message = message;
+        e.timestamp = Instant.now().toString();
+        return e;
+    }
+
+    /** 压缩条目（折已发旧历史为摘要，同时保留最末段原文）。firstKeptEntryId=保留段首个树的 id；tokensBefore=压缩前的总 token 估算。 */
+    public static SessionEntry compaction(String id, String parentId, String summary,
+                                         String firstKeptEntryId, int tokensBefore) {
+        SessionEntry e = new SessionEntry();
+        e.type = TYPE_COMPACTION;
+        e.id = id;
+        e.parentId = parentId;
+        e.summary = summary;
+        e.firstKeptEntryId = firstKeptEntryId;
+        e.tokensBefore = tokensBefore;
         e.timestamp = Instant.now().toString();
         return e;
     }

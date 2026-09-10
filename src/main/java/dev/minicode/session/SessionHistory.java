@@ -46,4 +46,13 @@ public class SessionHistory extends ArrayList<Message> {
         }
         return super.addAll(c);
     }
+
+    /**
+     * 仅覆盖内存视图的替换：用于压缩等场景，会话文件 append-only（commit 仅由 add/addAll 写入）。
+     * 与 {@code clear()+addAll(...)} 的关键差别是不触发额外的会话写入。
+     */
+    public void replaceKeepingInMemory(Collection<? extends Message> c) {
+        super.clear();
+        if (c != null) super.addAll(c);
+    }
 }
