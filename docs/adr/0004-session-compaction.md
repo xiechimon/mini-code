@@ -52,3 +52,13 @@ REPL 多轮对话已可持久化（`docs/adr/0003`），但只解决了「进程
 - **已就位**：`CompactionConfig`、`ContextCompactor`、`SessionContext` 三个新类；`SessionEntry` 增 `TYPE_COMPACTION` 与三个新字段；`SessionManager` 增 `appendCompaction` 方法；`SessionHistory.replaceKeepingInMemory` 辅助方法（用于未来压缩接线，不动文件）；CONTEXT.md 增四个术语；现存 cap-50 顺手去除。
 - **未接线**：REPL 主循环三路径（管道/JLine/Scanner）**不**自动压缩。`firstKeptEntryId` 写死 null，保留段投影路径成死码（重建视图仅含 `<summary>` + 压缩点后新增）。threshold 单位混用（chars vs tokens 在同一比较）。`usage` 采集未做，故防误伤护栏亦未做。
 - **本节所有上述限制已在 ADR 「未做」清单中列出，并附下一节交付建议**。
+
+## 2026-09-10 补完记录（3 commits）
+
+逐项落地四局限：
+
+- **REPL 触发接线**：`runJLineRepl` / `runScannerRepl` 增 turn-end `Runnable` 钩子；`Main.buildTurnComplete` lambda capture `history/workdir/model/llm` 闭包构造；`SessionHistory.replaceKeepingInMemory` 用于不写盘的内存替换。
+- **`firstKeptEntryId` 取值**：`Message.id` 字段新增（`@JsonInclude.NON_NULL`，`SessionManager.appendMessage` 在写盘时自动灌入）；`ContextCompactor.compact` 取保留段首条 message.id 作为 `firstKeptEntryId`（无保留段时为 null）；`SessionContext.project` 据此拼接「[summary] + [保留段] + [新增]」三段视图。
+- **threshold 单位统一 token**：`CompactionConfig` 全量走 token；env 改名 `MINICODE_CONTEXT_WINDOW_TOKENS` / `_RESERVE_TOKENS` / `_KEEP_RECENT_TOKENS`；默认窗口 200k 对齐 Claude Sonnet 默认值；`Message.text` 仍走 `chars/4` 启发式。
+- **usage 采集与防误伤**：`Message.usage`（`MessageUsage`）与 `Message.modelId` 新增；`OpenAiCompatClient.parseResponse`/`stream` 都采 usage（stream 路径顺带解析 raw 帧）；`ContextCompactor.estimateTokensWithGuards(history, currentModel)` 实现跨模型护栏 + usage 优先。
+- **接线加宽签名**：runJLineRepl/runScannerRepl 增 5 参 `Runnable` 钩子重载（仅原 4 参调用方仍走 forward 转 null）。

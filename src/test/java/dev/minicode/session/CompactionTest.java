@@ -11,6 +11,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CompactionTest {
@@ -68,18 +69,25 @@ class CompactionTest {
         StringBuilder big = new StringBuilder();
         for (int i = 0; i < 100; i++) big.append('x'); // 100 chars ≈ 25 tokens
         List<Message> history = new ArrayList<>();
-        for (int i = 0; i < 5; i++) history.add(Message.user(big.toString()));
+        for (int i = 0; i < 5; i++) {
+            Message u = Message.user(big.toString());
+            // 模拟 appendMessage 行为：消息 .id 由 SessionManager 注入；这里手动给一条赋值以便后续 firstKeptEntryId 校验
+            u.id = "m-" + i;
+            history.add(u);
+        }
 
-        List<Message> kept = cc.compact(history, null, null, null);
+        List<Message> kept = cc.compact(history, null, null, null, null);
         assertTrue(kept.size() < history.size(), "压缩应减少历史");
         assertTrue(kept.size() >= 1);
 
-        // 文件内应有一份 compaction 条目
-        int compactions = 0;
+        // 文件内应有一份 compaction 条目，且 firstKeptEntryId 等于保留段首条 message.id
+        SessionEntry compaction = null;
         for (SessionEntry e : SessionStore.load(m.filePath())) {
-            if (SessionEntry.TYPE_COMPACTION.equals(e.type)) compactions++;
+            if (SessionEntry.TYPE_COMPACTION.equals(e.type)) compaction = e;
         }
-        assertEquals(1, compactions);
+        assertNotNull(compaction);
+        assertNotNull(compaction.firstKeptEntryId);
+        assertEquals(kept.get(0).id, compaction.firstKeptEntryId);
 
         m.close();
     }
@@ -110,7 +118,7 @@ class CompactionTest {
         Path base = tmp.resolve("home4");
         SessionManager m = SessionManager.create(base, "/p");
         ContextCompactor cc = new ContextCompactor(m);
-        List<Message> kept = cc.compact(new ArrayList<>(), null, null, null);
+        List<Message> kept = cc.compact(new ArrayList<>(), null, null, null, null);
         assertTrue(kept.isEmpty());
         m.close();
     }

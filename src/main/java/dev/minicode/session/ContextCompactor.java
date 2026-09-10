@@ -57,12 +57,15 @@ public final class ContextCompactor {
     }
 
     /**
-     * 压缩 history：调 LLM 生成摘要 → 写 {@code compaction} 条目 → 返回压缩后视图（保留段原样）。
-     * 摘要失败时降级为伪摘要，不中断调用方。
+     * 压缩 history：调 LLM 生成摘要 → 写 {@code compaction} 条目（summary/firstKeptEntryId/tokensBefore）
+     * → 返回压缩后视图（保留段原样）。失败降级为伪摘要，不中断调用方。
+     *
+     * @param currentModel 当前模型 id（用于跨模型护栏的 context，与 provider 一致）
      */
-    public List<Message> compact(List<Message> history, LlmClient llm, Model model, String systemPrompt) throws IOException {
+    public List<Message> compact(List<Message> history, LlmClient llm, Model model, String systemPrompt,
+                                 String currentModel) throws IOException {
         if (history == null || history.isEmpty()) return List.of();
-        int tokensBefore = estimateTokens(history);
+        int tokensBefore = estimateTokensWithGuards(history, currentModel);
         List<Message> keep = pickKeepRecent(history, cfg.keepRecentTokens());
         List<Message> toCompress = new ArrayList<>(history.subList(0, history.size() - keep.size()));
         if (toCompress.isEmpty()) return new ArrayList<>(keep);
@@ -75,7 +78,9 @@ public final class ContextCompactor {
         if (summary == null || summary.isBlank()) {
             summary = buildFallbackSummary(toCompress);
         }
-        session.appendCompaction(summary, null, tokensBefore);
+        // firstKeptEntryId：保留段首条 Message.id（若第一条保留段没有 id，则不传，复投影走「压缩后新增」分支）
+        String firstKeptId = keep.isEmpty() ? null : keep.get(0).id;
+        session.appendCompaction(summary, firstKeptId, tokensBefore);
         return keep;
     }
 
