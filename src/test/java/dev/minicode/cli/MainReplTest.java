@@ -86,6 +86,22 @@ class MainReplTest {
     }
 
     /**
+     * 命令自动提示接线回归：createReader 带 completer 时开启 SuggestionType.COMPLETER
+     * （输 / 即出列表，对齐 pi），无 completer 时保持 NONE。dumb 终端下 JLine 内部降级，
+     * 此处仅锁定开关接线不回退。
+     */
+    @Test
+    void readerEnablesAutosuggestionWhenCompleterPresent(@TempDir Path tmp) throws Exception {
+        try (Terminal t = new ExternalTerminal("test-as", "dumb",
+                new ByteArrayInputStream(new byte[0]), new ByteArrayOutputStream(), StandardCharsets.UTF_8)) {
+            LineReader with = Main.createReader(t, tmp.resolve("h1"), SlashCommands.commandCompleter(null));
+            assertEquals(LineReader.SuggestionType.COMPLETER, with.getAutosuggestion());
+            LineReader without = Main.createReader(t, tmp.resolve("h2"), (org.jline.reader.Completer) null);
+            assertEquals(LineReader.SuggestionType.NONE, without.getAutosuggestion());
+        }
+    }
+
+    /**
      * 历史落盘单测：按规格 Testing Decisions，用 @TempDir 注入 history 路径——
      * 先建 reader 写入一行输入触发 save()，再建新 reader（同路径）断言历史可翻到该行。
      * 测试缝走 Main.createReader / ExternalTerminal dumb。

@@ -75,3 +75,6 @@
 - 并行工具执行 (Parallel Tool Execution): 同 turn 多工具调用按 LLM 发出顺序切连续段，全 READ_ONLY 段并行、含 STATEFUL 段串行；结果严格按 LLM 顺序回收；任一失败 fail-fast 取消同组未完成者
 - 正文渲染 (Markdown Rendering): 助手消息正文的 Markdown→终端文本呈现，事件渲染的子层；颜色仍只标角色，降级规则与事件渲染同源
 - 纯函数渲染缝: 渲染器只吃输入（文本/事件/样式/宽度）出文本，不读环境不碰时钟，单测断言输出字符串
+- 斜杠命令 (Slash Command): REPL 输入行首为 `/` 的元命令，命中注册表则执行并跳过本轮 LLM 调用；未命中按 fallthrough 终点语义原样发给模型。退出命令（/exit /quit）走 `isExitCommand` 特判、不入注册表（与管道截断共用一条路径）。见 `docs/adr/0006`
+- 命令注册表 (Command Registry): `SlashCommands.builtins()` 的 LinkedHashMap，注册序即 `/help` 展示序；`/help` 与 Tab 补全共用同一份数据源，保证展示与实际命令不漂移
+- 命令自动提示 (Command Autosuggestion): 输入 `/` 即浮现可用命令列表、随输入实时过滤的交互层（JLine `SuggestionType.COMPLETER`），候选带一行说明；对齐 pi「输 / 即出列表」，不靠 Tab。Tab 补全共存：Tab 进入方向键菜单

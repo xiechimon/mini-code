@@ -177,7 +177,7 @@ class SlashDispatcherTest {
         assertTrue(f.out().contains("不可用"), f.out());
     }
 
-    // ===== Tab 补全候选 =====
+    // ===== Tab 补全候选 / 命令提示 Completer =====
 
     @Test
     void completionNamesCoverRegistryAndExit() {
@@ -196,5 +196,35 @@ class SlashDispatcherTest {
         List<String> names = SlashCommands.completionNames(new SlashDispatcher(table));
         assertTrue(names.contains("/zzz"), "补全候选应与调度器注册表一致");
         assertFalse(names.contains("/help"));
+    }
+
+    /**
+     * 命令提示 Completer（输 / 即出列表的数据源）：候选带描述列，与 /help 同源；
+     * 仅首 token 出候选；/exit /quit 虽不入注册表但在提示中可见。
+     */
+    @Test
+    void commandCompleterEmitsDescriptionsAndExit() {
+        var completer = SlashCommands.commandCompleter(null);
+        List<org.jline.reader.Candidate> candidates = new ArrayList<>();
+        var parsed = new org.jline.reader.impl.DefaultParser().parse("/c", 2);
+        // wordIndex==0 的首 token 才有候选
+        completer.complete(null, parsed, candidates);
+        assertFalse(candidates.isEmpty());
+        var byValue = new java.util.HashMap<String, org.jline.reader.Candidate>();
+        for (var c : candidates) byValue.put(c.value(), c);
+        assertTrue(byValue.containsKey("/compact"), byValue.keySet().toString());
+        assertTrue(byValue.containsKey("/exit"), byValue.keySet().toString());
+        assertTrue(byValue.containsKey("/quit"), byValue.keySet().toString());
+        assertNotNull(byValue.get("/compact").descr(), "候选应带描述列（与 /help 同源）");
+    }
+
+    @Test
+    void commandCompleterIgnoresNonFirstToken() {
+        var completer = SlashCommands.commandCompleter(null);
+        List<org.jline.reader.Candidate> candidates = new ArrayList<>();
+        var parsed = new org.jline.reader.impl.DefaultParser().parse("/model m2", 8);
+        // wordIndex==1（参数位）不出候选
+        completer.complete(null, parsed, candidates);
+        assertTrue(candidates.isEmpty());
     }
 }

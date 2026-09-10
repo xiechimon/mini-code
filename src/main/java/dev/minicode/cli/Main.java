@@ -16,9 +16,9 @@ import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
 import org.jline.reader.Reference;
 import org.jline.reader.UserInterruptException;
+import org.jline.reader.Completer;
 import org.jline.reader.impl.DefaultParser;
 import org.jline.reader.impl.LineReaderImpl;
-import org.jline.reader.impl.completer.StringsCompleter;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
@@ -253,22 +253,25 @@ public class Main {
      * @return 配置好的 LineReader
      */
     static LineReader createReader(Terminal terminal, Path historyPath) throws IOException {
-        return createReader(terminal, historyPath, SlashCommands.completionNames(null));
+        return createReader(terminal, historyPath, (Completer) null);
     }
 
     /**
-     * 创建带持久化历史、多行支持与斜杠命令 Tab 补全的 LineReader。
+     * 创建带持久化历史、多行支持与斜杠命令提示的 LineReader。
      * <p>
-     * 补全仅作用于首 token（{@code line.wordIndex() == 0}），候选来自调度器注册表 +
-     * {@code /exit} {@code /quit}——与 {@code /help} 同一份注册表，两者不会漂移。
+     * 提示层（对齐 pi「输 / 即出列表」，wiki/4）：
+     * - 补全仅作用于首 token（{@code line.wordIndex() == 0}），候选 = 命令注册表 + {@code /exit} {@code /quit}
+     * - 开启 {@code SuggestionType.COMPLETER}：每次击键重算，候选列表浮现于行下方、随输入过滤；
+     *   dumb 终端自动降级不显示（JLine 内部 isTerminalDumb 判定）
+     * - Tab 补全共存：Tab 进入方向键菜单（JLine AUTO_MENU 默认），确认只填充、Enter 才提交
      * </p>
      *
-     * @param terminal            终端
-     * @param historyPath         历史文件路径（可为 null 表示不持久化）
-     * @param completionCandidates 首 token 补全候选（null/空 = 不安装补全）
+     * @param terminal    终端
+     * @param historyPath 历史文件路径（可为 null 表示不持久化）
+     * @param completer   首 token 补全器（null = 不安装）
      * @return 配置好的 LineReader
      */
-    static LineReader createReader(Terminal terminal, Path historyPath, List<String> completionCandidates) throws IOException {
+    static LineReader createReader(Terminal terminal, Path historyPath, Completer completer) throws IOException {
         if (historyPath != null) {
             try {
                 Path parent = historyPath.toAbsolutePath().getParent();
@@ -289,14 +292,14 @@ public class Main {
                 .option(LineReader.Option.HISTORY_TIMESTAMPED, false)
                 .option(LineReader.Option.HISTORY_INCREMENTAL, true)
                 .option(LineReader.Option.BRACKETED_PASTE, true);
-        if (completionCandidates != null && !completionCandidates.isEmpty()) {
-            builder.completer((r, line, candidates) -> {
-                if (line.wordIndex() == 0) {
-                    new StringsCompleter(completionCandidates).complete(r, line, candidates);
-                }
-            });
+        if (completer != null) {
+            builder.completer(completer);
         }
         LineReader reader = builder.build();
+        // 命令自动提示：输 / 即出候选列表（对齐 pi，不靠 Tab）；dumb 终端 JLine 内部自动降级
+        if (completer != null) {
+            reader.setAutosuggestion(LineReader.SuggestionType.COMPLETER);
+        }
         // —— 护栏：为何反射 ——
         // 背景：JLine 3.27.1 在 dumb/ExternalTerminal 下默认 keyMap 为 "dumb"，未绑定 BRACKETED_PASTE 的 begin 序列 "\u001B[200~"；
         //       导致多行粘贴（bracketed paste）被拆成多次 readLine 提交，回退到逐行历史。
@@ -355,7 +358,8 @@ public class Main {
             style = Style.PLAIN;
         }
         String promptStr = prompt(style);
-        LineReader reader = createReader(terminal, historyPath, SlashCommands.completionNames(ctx != null ? ctx.dispatcher() : null));
+        LineReader reader = createReader(terminal, historyPath,
+                SlashCommands.commandCompleter(ctx != null ? ctx.dispatcher() : null));
         while (true) {
             String line;
             try {

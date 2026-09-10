@@ -54,6 +54,24 @@ public final class SlashCommands {
         return names;
     }
 
+    /**
+     * 命令提示 Completer：候选 = 注册表 Entry（value=/name，descr=一行说明），
+     * 外加表外的 /exit /quit。/help 与本 Completer 共用同一注册表，展示不漂移。
+     * 仅首 token（wordIndex==0）出候选。
+     */
+    public static org.jline.reader.Completer commandCompleter(SlashDispatcher dispatcher) {
+        return (reader, line, candidates) -> {
+            if (line.wordIndex() != 0) return;
+            Map<String, Entry> table = dispatcher != null ? dispatcher.commands() : builtins();
+            table.forEach((name, e) -> candidates.add(
+                    new org.jline.reader.Candidate("/" + name, "/" + name, null, e.description(),
+                            null, null, true)));
+            String exitDesc = "退出 REPL";
+            candidates.add(new org.jline.reader.Candidate("/exit", "/exit", null, exitDesc, null, null, true));
+            candidates.add(new org.jline.reader.Candidate("/quit", "/quit", null, exitDesc, null, null, true));
+        };
+    }
+
     // ===== 内置命令实现 =====
 
     private static void help(String args, ReplContext ctx) {
