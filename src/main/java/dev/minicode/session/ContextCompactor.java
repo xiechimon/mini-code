@@ -37,7 +37,7 @@ public final class ContextCompactor {
     /** 触发判定：history 估算 token 超阈值。 */
     public boolean shouldCompact(List<Message> history) {
         int tokens = estimateTokens(history);
-        return tokens > Math.max(0, cfg.contextWindowChars() - cfg.reserveTokens());
+        return tokens > Math.max(0, cfg.contextWindowTokens() - cfg.reserveTokens());
     }
 
     /**

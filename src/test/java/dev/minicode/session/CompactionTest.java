@@ -50,7 +50,7 @@ class CompactionTest {
         // 每条 = 200 chars ≈ 50 tokens，总 40 条 = 2000 tokens，远小于窗口 默认阈值
         // 直接用超大字符串触发（不留固定假设）
         StringBuilder huge = new StringBuilder();
-        for (int i = 0; i < 100000; i++) huge.append('x');
+        for (int i = 0; i < 200_000; i++) huge.append('x'); // ~50k tokens/条 × 5 = 250k tokens > 窗口
         for (int i = 0; i < 5; i++) big.add(Message.user(huge.toString()));
         ContextCompactor cc = new ContextCompactor(m);
         assertTrue(cc.shouldCompact(big));
@@ -62,7 +62,7 @@ class CompactionTest {
         Path base = tmp.resolve("home3");
         SessionManager m = SessionManager.create(base, "/p");
         // keepRecent=8 tokens 很紧，配合 100 chars/条（约 25 tokens/条）灌 5 条 → 触发压缩、保留不到 5 条
-        CompactionConfig.Resolved cfg = new CompactionConfig.Resolved(128_000, 16_384, 8);
+        CompactionConfig.Resolved cfg = new CompactionConfig.Resolved(200_000L, 16_384, 8);
         ContextCompactor cc = new ContextCompactor(m, cfg);
 
         StringBuilder big = new StringBuilder();

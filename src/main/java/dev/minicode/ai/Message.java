@@ -16,6 +16,25 @@ public class Message {
      */
     public enum Role {user, assistant, toolResult, system}
 
+    /** Token 用量；与 {@code docs/adr/0004}「usage 采集」配对使用。 */
+    public static class MessageUsage {
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public Integer promptTokens;
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public Integer completionTokens;
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public Integer totalTokens;
+
+        public MessageUsage() {
+        }
+
+        public MessageUsage(Integer prompt, Integer completion, Integer total) {
+            this.promptTokens = prompt;
+            this.completionTokens = completion;
+            this.totalTokens = total;
+        }
+    }
+
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class ToolCall {
         public String id;              // 工具调用 ID（对应 OpenAI tool_call_id）
@@ -84,6 +103,21 @@ public class Message {
     public List<Content> content;  // 内容块列表
     public String stopReason;      // 结束原因："end" | "toolCalls" | "length" | "error" | "aborted"
     public String errorMessage;    // 错误信息（当 stopReason=error 时）
+
+    /**
+     * 树身份 id（与 SessionEntry.message 同源）；运行时非必填、可空。仅当该条消息会进入 append-only JSONL 树时由
+     * SessionManager 在 append 路径上灌入，让 SessionContext.project 能用 {@code firstKeptEntryId} 找回保留段。
+     * 详见 {@code docs/adr/0004} 与 {@code MessageUsage}。
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public String id;
+
+    /**
+     * Provider 响应里的 token 用量（chat 或 stream 末帧均可采）；本轮供压缩触发判定，未来可扩展如成本跟踪等。
+     * 非必填，Jackson 序列化时为 null 时省略。
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public MessageUsage usage;
 
     public Message() {
     }
