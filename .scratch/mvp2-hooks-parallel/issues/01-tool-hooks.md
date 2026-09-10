@@ -4,7 +4,7 @@
 
 **Blocked by:** None（可立即开始）。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## 交付物
 

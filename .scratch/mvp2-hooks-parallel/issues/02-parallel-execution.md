@@ -2,9 +2,9 @@
 
 **What to build:** 读 `.scratch/mvp2-hooks-parallel/spec.md`（Implementation Decisions 后 4 条 + Testing Decisions）与 `docs/adr/0005`。在 ticket 01 的钩子缝之上，把同 turn 多 tool_calls 的执行改为「READ_ONLY 连续段并行、STATEFUL 串行」。每步遵循 ADR-0005 偏离记录。
 
-**Blocked by:** 01
+**Blocked by:** 01（已解决）
 
-**Status:** blocked
+**Status:** ready-for-agent
 
 ## 交付物
 
