@@ -70,5 +70,8 @@
 - 摘要因 (Summarization Mutation): 压缩时对内存历史视图的替换操作；仅缩上下文窗口、不动 JSONL「会话文件」（source of truth），由此消除旧的 cap-50 直接丢弃
 - 上下文预算 (Context Budget): 模型上下文窗口（`contextWindow`）、预留（`reserveTokens`）、保留段（`keepRecentTokens`）三元组，是触发的面值；通过 `CompactionConfig` 常量类配置（对齐 pi 默认 `reserve=16384 / keepRecent=20000`）
 - 压缩摘要格式 (Compaction Summary Format): LLM 生成的结构化检查点文本——**对齐 pi 的 6 段检查点**（`Goal / Constraints / Progress / Key Decisions / Next Steps / Critical Context`）但**有意简化为 4 段**（`Goal / Progress / Key Decisions / Next`），落在 `<summary>` 消息里供上下文视图打头用
+- 工具钩子 (Tool Hook): 工具调用前/后的同步拦截链，三档决定 `PROCEED / BLOCK / MODIFY`；BLOCK 短路该工具并以 isError 结果回 LLM（reason 可见），MODIFY 替换调用且后续钩子看到修改后的；钩子异常 = 该工具失败。对齐 pi 的 beforeToolCall/afterToolCall，有意简化：同步链、无 terminate、无 registry（见 `docs/adr/0005`）
+- 工具种类 (Tool Kind): 工具副作用分级 `READ_ONLY / STATEFUL`，**默认 STATEFUL**（fail-safe：未知工具不并行）；READ_ONLY 可并行、STATEFUL 串行。mini-code 自加的轻约束（pi 无对应概念）
+- 并行工具执行 (Parallel Tool Execution): 同 turn 多工具调用按 LLM 发出顺序切连续段，全 READ_ONLY 段并行、含 STATEFUL 段串行；结果严格按 LLM 顺序回收；任一失败 fail-fast 取消同组未完成者
 - 正文渲染 (Markdown Rendering): 助手消息正文的 Markdown→终端文本呈现，事件渲染的子层；颜色仍只标角色，降级规则与事件渲染同源
 - 纯函数渲染缝: 渲染器只吃输入（文本/事件/样式/宽度）出文本，不读环境不碰时钟，单测断言输出字符串
