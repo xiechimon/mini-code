@@ -36,3 +36,10 @@
 ## Comments
 
 （实现过程中的决策追加于此）
+
+- 2026-09-10 实现记录：
+  - **afterToolCall 触发面**：按票面字面「execute 完成（或 BLOCK）后」——正常执行与 BLOCK 均按序调 afterToolCall；beforeToolCall 抛异常（hook failed）路径只发 ToolResultEvent + isError 结果回 LLM，不发 ToolStart、也不走 afterToolCall（视为链前中断，票面未要求对该情形观测；事后扩充容易）。
+  - **未知工具 def==null 不走钩子**：与 MVP1 完全一致（无 ToolStart/ToolResultEvent 发射，仅回「未知工具」isError 结果消息），钩子缝只挂在「找到工具且将执行」的路径。
+  - **beforeToolCall 返回 null 视为 PROCEED**（防御空返回值，与默认放行语义一致）。
+  - **MODIFY 语义边界**：替换的 ToolCall 的 id/argumentsJson 由钩子负责保持（工具结果与 tool_call_id 需与 LLM 配对，改 id 会破坏配对）；AgentLoop 只负责把 currentCall（可能已被替换）用于 execute 与结果消息。
+  - **环境性失败（与本票无关）**：票面基线 229 测试中 `OpenAiCompatClientStreamingTest.realGatewaySmokeIfKeyPresent` 在本机既有失败——auth.json/.env 解析出的 key 余额不足，真实网关返 401（`Insufficient balance`），属环境态而非代码回归；本票前后该单条失败保持一致，其余 228 + 新增 10 条全绿。

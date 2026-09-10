@@ -26,6 +26,11 @@ import java.util.stream.Collectors;
  * 工具调用分发的完整 JSON 仍从拼装结果取。default stream 在零回调时等价同步，
  * 因此既有 fake 测试零改动；中断触发器可注入，置位即通过 stream 的取消参数生效。
  * </p>
+ * <p>
+ * 工具循环在每次执行前后走同步 {@link ToolHook} 链（对齐 pi wiki/19 beforeToolCall/afterToolCall，
+ * 有意简化见 docs/adr/0005）：按注册顺序票决，BLOCK 短路该工具、MODIFY 替换调用后续钩子看到修改后的，
+ * 钩子自身异常 = 该工具 isError 失败；默认空 hooks 时行为与 MVP1 完全一致。
+ * </p>
  */
 public class AgentLoop {
 
@@ -35,6 +40,7 @@ public class AgentLoop {
     private final String systemPrompt;
     private final List<ToolDefinition> tools;
     private final int maxTurns; // 最大轮次，防止无限循环
+    private final List<ToolHook> hooks; // 工具钩子链（before/after），默认空 = 行为与 MVP1 一致
     private final Supplier<InterruptTrigger> triggerSupplier;
     private final boolean streamingEnabled; // 管道模式禁用流式，零流式事件发射
 
@@ -61,11 +67,42 @@ public class AgentLoop {
      */
     public AgentLoop(LlmClient llm, Model model, String systemPrompt, List<ToolDefinition> tools, int maxTurns,
                      Supplier<InterruptTrigger> triggerSupplier, boolean streamingEnabled) {
+        this(llm, model, systemPrompt, tools, maxTurns, List.of(), triggerSupplier, streamingEnabled);
+    }
+
+    /**
+     * 带工具钩子的构造（MVP2 钩子缝）——null 钩子列表视为空。默认启用流式、不带中断触发器。
+     *
+     * @param hooks 工具钩子链，按序在每次工具执行前后调用；可为 null 表示无钩子
+     */
+    public AgentLoop(LlmClient llm, Model model, String systemPrompt, List<ToolDefinition> tools, int maxTurns,
+                     List<ToolHook> hooks) {
+        this(llm, model, systemPrompt, tools, maxTurns, hooks, null, true);
+    }
+
+    /**
+     * 带钩子与中断触发器的构造。默认启用流式。
+     */
+    public AgentLoop(LlmClient llm, Model model, String systemPrompt, List<ToolDefinition> tools, int maxTurns,
+                     List<ToolHook> hooks, Supplier<InterruptTrigger> triggerSupplier) {
+        this(llm, model, systemPrompt, tools, maxTurns, hooks, triggerSupplier, true);
+    }
+
+    /**
+     * 全参构造：钩子链 + 中断触发器 + 流式开关。所有构造器最终委派至此，hooks 为 null 即空列表。
+     *
+     * @param hooks            工具钩子链（null → 空列表，行为与 MVP1 一致）
+     * @param triggerSupplier  中断触发器供应方（null → 永不取消）
+     * @param streamingEnabled false 时禁用流式，streamOnce 直接委派 chat
+     */
+    public AgentLoop(LlmClient llm, Model model, String systemPrompt, List<ToolDefinition> tools, int maxTurns,
+                     List<ToolHook> hooks, Supplier<InterruptTrigger> triggerSupplier, boolean streamingEnabled) {
         this.llm = llm;
         this.model = model;
         this.systemPrompt = systemPrompt;
         this.tools = tools;
         this.maxTurns = maxTurns;
+        this.hooks = hooks != null ? hooks : List.of();
         this.triggerSupplier = triggerSupplier != null ? triggerSupplier : () -> () -> false;
         this.streamingEnabled = streamingEnabled;
     }
@@ -139,30 +176,87 @@ public class AgentLoop {
                 continue; // 让模型看到错误后重试
             }
 
-            // 顺序执行工具（MVP），MVP2 再加并行
+            // 顺序执行工具（MVP），并行见 ticket 02；每工具同步钩子链对齐 ADR-0005
             List<Message> toolResults = new ArrayList<>();
             for (Message.ToolCall tc : toolCalls) {
                 ToolDefinition def = findTool(tc.name);
                 String output;
                 boolean isError;
                 if (def == null) {
+                    // 未知工具不走钩子、不发 ToolStart/ToolResultEvent（与 MVP1 一致），仅回 isError 结果
                     output = "未知工具: " + tc.name;
                     isError = true;
-                } else {
-                    if (sink != null) sink.on(new AgentEvent.ToolStart(tc));
+                    Message unknownMsg = Message.toolResult(tc.id, output, isError);
+                    toolResults.add(unknownMsg);
+                    contextMessages.add(unknownMsg);
+                    newMessages.add(unknownMsg);
+                    continue;
+                }
+
+                // beforeToolCall 链：按序票决，BLOCK 短路后续钩子、MODIFY 替换调用后续钩子看到修改后的、异常短路为 hook failed
+                Message.ToolCall currentCall = tc;
+                boolean blocked = false;
+                String blockReason = null;
+                String hookError = null;
+                for (ToolHook hook : hooks) {
+                    Map<String, Object> effArgs = currentCall.arguments != null ? currentCall.arguments : Map.of();
+                    ToolDecision decision;
                     try {
-                        Map<String, Object> args = tc.arguments != null ? tc.arguments : Map.of();
-                        ToolResult r = def.execute(tc.id, args);
+                        decision = hook.beforeToolCall(new ToolCallEvent(currentCall, effArgs));
+                    } catch (Exception e) {
+                        hookError = e.getMessage();
+                        log.warn("钩子 beforeToolCall 执行失败", e);
+                        break;
+                    }
+                    if (decision == null || decision.action() == ToolDecision.Action.PROCEED) continue;
+                    if (decision.action() == ToolDecision.Action.BLOCK) {
+                        blocked = true;
+                        blockReason = decision.reason();
+                        break;
+                    }
+                    // MODIFY：替换当前调用，继续走后续钩子
+                    if (decision.modifiedCall() != null) currentCall = decision.modifiedCall();
+                }
+
+                if (blocked) {
+                    output = "blocked by hook: " + (blockReason != null ? blockReason : "");
+                    isError = true;
+                } else if (hookError != null) {
+                    // 钩子异常：工具未执行、不发 ToolStart、不走 afterToolCall，仅回 isError 结果并继续下一工具
+                    output = "hook failed: " + hookError;
+                    isError = true;
+                    AgentEvent.ToolResultEvent failEvent = new AgentEvent.ToolResultEvent(currentCall, output, isError);
+                    if (sink != null) sink.on(failEvent);
+                    Message failMsg = Message.toolResult(currentCall.id, output, isError);
+                    toolResults.add(failMsg);
+                    contextMessages.add(failMsg);
+                    newMessages.add(failMsg);
+                    continue;
+                } else {
+                    if (sink != null) sink.on(new AgentEvent.ToolStart(currentCall));
+                    try {
+                        Map<String, Object> args = currentCall.arguments != null ? currentCall.arguments : Map.of();
+                        ToolResult r = def.execute(currentCall.id, args);
                         output = r.content();
                         isError = r.isError();
                     } catch (Exception e) {
                         output = "工具执行失败: " + e.getMessage();
                         isError = true;
-                        log.warn("工具 {} 执行失败", tc.name, e);
+                        log.warn("工具 {} 执行失败", currentCall.name, e);
                     }
-                    if (sink != null) sink.on(new AgentEvent.ToolResultEvent(tc, output, isError));
                 }
-                Message resultMsg = Message.toolResult(tc.id, output, isError);
+
+                // execute 完成或 BLOCK 后：按序调 afterToolCall（单钩子异常仅记日志），再发 ToolResultEvent
+                AgentEvent.ToolResultEvent resultEvent = new AgentEvent.ToolResultEvent(currentCall, output, isError);
+                for (ToolHook hook : hooks) {
+                    try {
+                        hook.afterToolCall(resultEvent);
+                    } catch (Exception e) {
+                        log.warn("钩子 afterToolCall 执行失败", e);
+                    }
+                }
+                if (sink != null) sink.on(resultEvent);
+                Message resultMsg = Message.toolResult(currentCall.id, output, isError);
                 toolResults.add(resultMsg);
                 contextMessages.add(resultMsg);
                 newMessages.add(resultMsg);
