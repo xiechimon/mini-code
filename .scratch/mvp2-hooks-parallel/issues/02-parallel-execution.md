@@ -42,4 +42,12 @@
 - **事件并发**：并行下 ToolStart/ToolResultEvent 按完成时序、可交错发射（符合票），但经 `eventLock` 串行化 `sink.on`——sink 实现（如测试 ArrayList）不被并发调用。
 - **fail-fast 触发条件落点**：`runToolCall` 内 execute 异常 = executeFailure 标记（唯一触发）；BLOCK / hook-failed / 工具返回 isError 结果均不触发，兄弟照跑（per-tool 独立票决语义保持）。
 - **取消竞态端**：兄弟被 `cancel(true)` 时若已带着中断完成（cancel 落空），保留其完成结果（「已完成的结果保留」）；否则构造 cancelled 结果——测试两端断言 isError+cancelled 语义。
+
+2026-09-10（review 修复轮，由协调者直接实施——fix 子代理两次只分析未动手，改用主 checkout 直修）：
+- **ToolResultEvent 改为完成时序发射**（修 Spec-a1）：worker 线程完成即走 afterToolCall + 发射，主线程只对取消/中止合成结果发射；claim 原子位仲裁「每槽位只发射一次」。afterToolCall 随之移到 worker 线程（ToolHook javadoc 已按实修正）。新增 `parallelResultEventsInCompletionOrderButCollectedInLlmOrder` 断言事件序与 LLM 序分离。
+- **fail-fast 跨 LLM 位置**（修 Spec-a2）：收集从按序 `f.get()` 改为 `ExecutorCompletionService` 轮询（25ms 片），首个 execute 异常/回合中止即 claim+cancel 全部未完成兄弟；已 claim（已完成）者保留。新增 `failFastCancelsEarlierInFlightSibling`（[慢者在前、快抛异常者在后]）。
+- **US-9 集成测试补齐**（修 Spec-a3）：`turnTriggerCancelDuringParallelGroupInterruptsWorkerAndCleansUp`（trigger 段内置位 → cancel(true) → 真 sleep 子进程 destroyForcibly + waitFor 确定性断言）；`triggerSetBeforeToolSegmentYieldsAbortedWithoutExecuting`（fillCancelled 段前路径）。
+- **顺手修**：`argsOf()` 抽取消除 Map.of() 重复；删 streamOnce 死分支（trigger 永非 null）；常量改名 `SIBLING_CANCELLED_OUTPUT`/`TURN_ABORTED_OUTPUT`（段内取消与段前中止分两类文本）；`ToolOutcome` 三布尔手搓改 `OutcomeKind` 枚举；Slot 加 started/done 等被取消 worker 的中断清理完成再组装。
+- **不修（记录理由）**：AgentLoop 构造器望远镜 6 重载（改动面牵涉全部调用点与既有测试，留后续 builder 重构）；runWithHistory 方法长度（Divergent Change 趋势，随下个特性拆）。
+- **取消竞态端新表述**：claim 是「谁写结果/谁发射」的唯一仲裁——主线程 claim 先于 cancel(true)，worker 完成时 claim 落空则丢弃其结果；不存在「cancel 落空保留完成结果」的旧竞态（该语义现由 claim 显式表达）。
 - **未知工具视作 STATEFUL**：独立单元素段串行短路，钩子与事件语义与 MVP1/票01 完全一致。

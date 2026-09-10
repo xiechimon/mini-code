@@ -390,6 +390,176 @@ class AgentParallelExecutionTest {
                 && "ghost".equals(ts.toolCall().name)), "未知工具不应发 ToolStart");
     }
 
+    // ===== 修复轮 1：ToolResultEvent 按完成时序由 worker 发射，LLM 结果仍按发出顺序 =====
+    @Test
+    void parallelResultEventsInCompletionOrderButCollectedInLlmOrder() throws Exception {
+        List<String> log = new CopyOnWriteArrayList<>();
+        List<Context> seen = new ArrayList<>();
+        List<AgentEvent> events = new CopyOnWriteArrayList<>();
+        CyclicBarrier bothArrived = new CyclicBarrier(2);
+        AtomicReference<String> afterHookThread = new AtomicReference<>();
+
+        // fast（LLM 位置靠后）：barrier 后立即返回；slow（位置靠前）：barrier 后等观察到 fast 的 ToolResultEvent 才返回
+        ProbeTool slow = new ProbeTool("slow", ToolDefinition.ToolKind.READ_ONLY, log, id -> {
+            awaitQuiet(bothArrived);
+            long deadline = System.currentTimeMillis() + 5000;
+            while (System.currentTimeMillis() < deadline) {
+                boolean fastEmitted = events.stream().anyMatch(e -> e instanceof AgentEvent.ToolResultEvent tre
+                        && "fast".equals(tre.toolCall().name));
+                if (fastEmitted) return okRan(id);
+                nap(10);
+            }
+            throw new IllegalStateException("fast 的 ToolResultEvent 未在 5s 内按完成时序发射");
+        });
+        ProbeTool fast = new ProbeTool("fast", ToolDefinition.ToolKind.READ_ONLY, log, id -> {
+            awaitQuiet(bothArrived);
+            return okRan(id);
+        });
+        ToolHook captureAfterThread = new ToolHook() {
+            @Override public void afterToolCall(AgentEvent.ToolResultEvent e) {
+                afterHookThread.set(Thread.currentThread().getName());
+            }
+        };
+
+        AgentLoop loop = new AgentLoop(fakeTurns(List.of(tc("a", "slow"), tc("b", "fast")), seen),
+                MODEL, "sys", List.of(slow, fast), 5, List.of(captureAfterThread));
+        loop.run(List.of(Message.user("hi")), events::add);
+
+        // 完成时序：fast 的事件先于 slow（fast 先完成）
+        int fastIdx = -1, slowIdx = -1;
+        for (int i = 0; i < events.size(); i++) {
+            if (events.get(i) instanceof AgentEvent.ToolResultEvent tre) {
+                if ("fast".equals(tre.toolCall().name) && fastIdx < 0) fastIdx = i;
+                if ("slow".equals(tre.toolCall().name) && slowIdx < 0) slowIdx = i;
+            }
+        }
+        assertTrue(fastIdx >= 0 && slowIdx >= 0 && fastIdx < slowIdx,
+                "快者（LLM 位置靠后）的 ToolResultEvent 应先发射；事件序=" + events.stream()
+                        .filter(e -> e instanceof AgentEvent.ToolResultEvent)
+                        .map(e -> ((AgentEvent.ToolResultEvent) e).toolCall().name).toList());
+        // 回 LLM 的结果仍严格按发出顺序 a,b
+        List<String> ids = seen.get(1).messages.stream()
+                .filter(m -> m.role == Message.Role.toolResult)
+                .map(m -> m.content.get(0).toolCallId).toList();
+        assertEquals(List.of("a", "b"), ids, "LLM 结果序保持发出顺序");
+        // afterToolCall 在 worker 线程上被调用（并行组）
+        assertNotNull(afterHookThread.get());
+        assertTrue(afterHookThread.get().startsWith("mini-code-tool-"),
+                "afterToolCall 应在并行组工作线程执行，实际=" + afterHookThread.get());
+    }
+
+    // ===== 修复轮 2：fail-fast 跨 LLM 位置——慢者在前、快抛异常者在后，慢者仍被取消 =====
+    @Test
+    void failFastCancelsEarlierInFlightSibling() throws Exception {
+        List<String> log = new CopyOnWriteArrayList<>();
+        List<Context> seen = new ArrayList<>();
+        java.util.concurrent.CountDownLatch slowStarted = new java.util.concurrent.CountDownLatch(1);
+
+        ProbeTool slow = new ProbeTool("slow", ToolDefinition.ToolKind.READ_ONLY, log, id -> {
+            slowStarted.countDown();
+            while (!Thread.currentThread().isInterrupted()) nap(25);
+            return ToolResult.error("slow-interrupted"); // claim 已输给主线程，此结果被丢弃
+        });
+        ProbeTool fastFail = new ProbeTool("fastFail", ToolDefinition.ToolKind.READ_ONLY, log, id -> {
+            try { slowStarted.await(5, TimeUnit.SECONDS); } catch (InterruptedException ignore) { }
+            throw new RuntimeException("boom");
+        });
+
+        long t0 = System.nanoTime();
+        AgentLoop loop = new AgentLoop(fakeTurns(List.of(tc("a", "slow"), tc("b", "fastFail")), seen),
+                MODEL, "sys", List.of(slow, fastFail), 5);
+        loop.run(List.of(Message.user("hi")), null);
+        long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
+
+        assertTrue(elapsedMs < 4000, "fail-fast 应立即取消在途慢者而非按 LLM 位置阻塞等待，耗时=" + elapsedMs + "ms");
+        List<Message> results = seen.get(1).messages.stream()
+                .filter(m -> m.role == Message.Role.toolResult).toList();
+        assertEquals(2, results.size());
+        Message slowRes = results.stream().filter(m -> "a".equals(m.content.get(0).toolCallId)).findFirst().orElseThrow();
+        assertTrue(slowRes.content.get(0).isError && slowRes.text().contains("cancelled"),
+                "位置靠前的在途慢者应被取消为 isError「cancelled」，实际=" + slowRes.text());
+        Message failRes = results.stream().filter(m -> "b".equals(m.content.get(0).toolCallId)).findFirst().orElseThrow();
+        assertTrue(failRes.content.get(0).isError && failRes.text().contains("boom"));
+        assertEquals(2, seen.size(), "fail-fast 整轮不中断，应进入下一轮");
+    }
+
+    // ===== 修复轮 3（US-9）：回合触发器在工具段执行期间置位 → 并行组被 cancel → 子进程被 destroy =====
+    @Test
+    void turnTriggerCancelDuringParallelGroupInterruptsWorkerAndCleansUp() throws Exception {
+        List<String> log = new CopyOnWriteArrayList<>();
+        List<Context> seen = new ArrayList<>();
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        java.util.concurrent.CountDownLatch procStarted = new java.util.concurrent.CountDownLatch(1);
+        AtomicReference<Long> childPid = new AtomicReference<>();
+
+        ProbeTool proc = new ProbeTool("proc", ToolDefinition.ToolKind.READ_ONLY, log, id -> {
+            try {
+                Process p = new ProcessBuilder("sleep", "60").start();
+                childPid.set(p.pid());
+                procStarted.countDown();
+                try {
+                    Thread.sleep(60_000); // 睡到被 cancel(true) 中断
+                } catch (InterruptedException ie) {
+                    // 预期中断路径
+                }
+                p.destroyForcibly();
+                p.waitFor(); // 同步等子进程退出，保证断言确定性
+                return ToolResult.error("interrupted");
+            } catch (Exception e) {
+                return ToolResult.error("proc-tool-failed: " + e.getMessage());
+            }
+        });
+        ProbeTool flip = new ProbeTool("flip", ToolDefinition.ToolKind.READ_ONLY, log, id -> {
+            try { procStarted.await(5, TimeUnit.SECONDS); } catch (InterruptedException ignore) { }
+            cancelled.set(true);
+            return okRan(id);
+        });
+        InterruptTrigger trigger = new InterruptTrigger() {
+            @Override public boolean isCancelled() { return cancelled.get(); }
+            @Override public void close() { }
+        };
+
+        AgentLoop loop = new AgentLoop(
+                fakeTurns(List.of(tc("a", "proc"), tc("b", "flip")), seen),
+                MODEL, "sys", List.of(proc, flip), 5, List.of(), () -> trigger);
+        loop.run(List.of(Message.user("hi")), null);
+
+        assertNotNull(childPid.get(), "子进程应已启动");
+        assertFalse(ProcessHandle.of(childPid.get()).map(ProcessHandle::isAlive).orElse(false),
+                "trigger 置位 → cancel(true) → worker 中断 → 子进程应已 destroy（PID " + childPid.get() + "）");
+        List<Message> results = seen.get(1).messages.stream()
+                .filter(m -> m.role == Message.Role.toolResult).toList();
+        Message procRes = results.stream().filter(m -> "a".equals(m.content.get(0).toolCallId)).findFirst().orElseThrow();
+        assertTrue(procRes.content.get(0).isError && procRes.text().contains("cancelled"),
+                "被回合中止的工具应得 cancelled 结果，实际=" + procRes.text());
+        assertEquals(2, seen.size(), "中止处理后整轮不中断，应进入下一轮");
+    }
+
+    // ===== 修复轮 4（US-9b）：段前中止——trigger 在工具段开始前已置位 → 全部填中止结果、工具不执行 =====
+    @Test
+    void triggerSetBeforeToolSegmentYieldsAbortedWithoutExecuting() throws Exception {
+        List<String> log = new CopyOnWriteArrayList<>();
+        List<Context> seen = new ArrayList<>();
+        ProbeTool r1 = new ProbeTool("r1", ToolDefinition.ToolKind.READ_ONLY, log, AgentParallelExecutionTest::okRan);
+        ProbeTool r2 = new ProbeTool("r2", ToolDefinition.ToolKind.READ_ONLY, log, AgentParallelExecutionTest::okRan);
+        InterruptTrigger aborted = new InterruptTrigger() {
+            @Override public boolean isCancelled() { return true; }
+            @Override public void close() { }
+        };
+
+        AgentLoop loop = new AgentLoop(fakeTurns(List.of(tc("a", "r1"), tc("b", "r2")), seen),
+                MODEL, "sys", List.of(r1, r2), 5, List.of(), () -> aborted);
+        loop.run(List.of(Message.user("hi")), null);
+
+        assertTrue(log.isEmpty(), "段前中止：任何工具都不应进入 execute，实际=" + log);
+        List<Message> results = seen.get(1).messages.stream()
+                .filter(m -> m.role == Message.Role.toolResult).toList();
+        assertEquals(2, results.size(), "全部工具得到中止结果并回 LLM");
+        assertTrue(results.stream().allMatch(m -> m.content.get(0).isError && m.text().contains("cancelled")),
+                "中止结果应 isError 且含 cancelled，实际=" + results.stream().map(Message::text).toList());
+        assertEquals(2, seen.size(), "段前中止整轮不中断，应进入下一轮");
+    }
+
     // ===== helper 消息构造 =====
     private static Message assistant(List<Message.Content> cs, String stopReason) {
         Message m = new Message();

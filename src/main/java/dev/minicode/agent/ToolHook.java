@@ -8,7 +8,8 @@ package dev.minicode.agent;
  * 按注册顺序票决，BLOCK 短路后续 before 钩子，钩子自身异常 = 该工具 isError 失败。
  * 有意简化（terminate / afterToolCall 改写 / registry 动态装卸 / execute signal）见 {@code docs/adr/0005}。
  * </p>
- * 钩子实现者需自知：before/after 未来可能在并行组内被并发调用（per-tool 独立票决），详见 ADR-0005。
+ * 钩子实现者需自知：before/after 在并行组内会被并发调用（per-tool 独立票决、工作线程上执行），
+ * 实现须线程安全；串行路径下均在主线程按序调用。详见 ADR-0005。
  */
 public interface ToolHook {
 

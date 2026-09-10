@@ -14,9 +14,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -41,17 +45,18 @@ import java.util.stream.Collectors;
  * 段内全 READ_ONLY 则经 daemon 线程池并行、含任一 STATEFUL 则整段按序串行，段间保持先后；
  * 结果严格按 LLM 发出顺序回 LLM。并行组内任一工具 execute 抛异常 → fail-fast cancel 兄弟
  * （被取消者构造 isError「cancelled」结果，已完成结果保留）；钩子的 BLOCK / isError 结果不算异常、不触发。
- * {@code ToolStart} / {@code ToolResultEvent} 按完成时序发射（并行下可交错，经事件锁保证 sink 不被并发调用）。
+ * 并行组内 {@code ToolStart} 在任务开始、{@code ToolResultEvent} 与 afterToolCall 在任务完成时均由
+ * 工作线程按完成时序发射（经事件锁保证 sink 不被并发调用）；主线程只对「取消/中止」的合成结果发射。
  * 线程池首次 {@code toolCalls.size() > 1} 时懒创建，daemon 随 JVM 退出，AgentLoop 不实现 AutoCloseable。
  * </p>
  */
 public class AgentLoop {
 
     private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
-    /** 并行组内被取消工具的失败结果文本（fail-fast，见 docs/adr/0005） */
-    private static final String CANCELLED_OUTPUT = "cancelled: 同组工具失败";
-    /** 工具执行阶段被中止时，未执行工具的失败结果文本 */
-    private static final String ABORTED_OUTPUT = "cancelled: 执行已中止";
+    /** 并行组内因兄弟失败被取消的工具的失败结果文本（fail-fast，见 docs/adr/0005） */
+    private static final String SIBLING_CANCELLED_OUTPUT = "cancelled: 同组工具失败";
+    /** 回合中止（trigger 置位）时，未执行/被取消工具的失败结果文本 */
+    private static final String TURN_ABORTED_OUTPUT = "cancelled: 执行已中止";
 
     private final LlmClient llm;
     private final Model model;
@@ -209,9 +214,9 @@ public class AgentLoop {
                 Message[] orderedResults = new Message[toolCalls.size()];
                 int start = 0;
                 while (start < orderedResults.length) {
-                    // 回合级取消检查：每段开始前，置位则剩余工具构造取消结果、不再执行
+                    // 段前检查：回合触发器置位则剩余工具构造中止结果、不再执行（段内中止由 executeGroupParallel 响应式处理）
                     if (turnTrigger.isCancelled()) {
-                        fillCancelled(orderedResults, toolCalls, start, sink, ABORTED_OUTPUT);
+                        fillCancelled(orderedResults, toolCalls, start, sink);
                         break;
                     }
                     int end = start + 1;
@@ -257,7 +262,7 @@ public class AgentLoop {
         ToolDefinition def = findTool(tc.name);
         if (def == null) {
             // 未知工具不走钩子、不发 ToolStart/ToolResultEvent（与 MVP1 一致），仅回 isError 结果
-            return new ToolOutcome(tc, "未知工具: " + tc.name, true, false, false, false);
+            return new ToolOutcome(tc, "未知工具: " + tc.name, true, OutcomeKind.UNKNOWN);
         }
 
         // beforeToolCall 链：按序票决，BLOCK 短路后续钩子、MODIFY 替换调用后续钩子看到修改后的、异常短路为 hook failed
@@ -266,10 +271,9 @@ public class AgentLoop {
         String blockReason = null;
         String hookError = null;
         for (ToolHook hook : hooks) {
-            Map<String, Object> effArgs = currentCall.arguments != null ? currentCall.arguments : Map.of();
             ToolDecision decision;
             try {
-                decision = hook.beforeToolCall(new ToolCallEvent(currentCall, effArgs));
+                decision = hook.beforeToolCall(new ToolCallEvent(currentCall, argsOf(currentCall)));
             } catch (Exception e) {
                 hookError = e.getMessage();
                 log.warn("钩子 beforeToolCall 执行失败", e);
@@ -287,29 +291,27 @@ public class AgentLoop {
 
         if (blocked) {
             return new ToolOutcome(currentCall, "blocked by hook: " + (blockReason != null ? blockReason : ""),
-                    true, true, true, false);
+                    true, OutcomeKind.BLOCKED);
         }
         if (hookError != null) {
             // 钩子异常：工具未执行、不发 ToolStart、不走 afterToolCall，仅回 isError 结果（不算异常、不触发 fail-fast）
-            return new ToolOutcome(currentCall, "hook failed: " + hookError, true, false, true, false);
+            return new ToolOutcome(currentCall, "hook failed: " + hookError, true, OutcomeKind.HOOK_FAILED);
         }
 
         emit(sink, new AgentEvent.ToolStart(currentCall));
-        String output;
-        boolean isError;
-        boolean executeFailure = false;
         try {
-            Map<String, Object> args = currentCall.arguments != null ? currentCall.arguments : Map.of();
-            ToolResult r = def.execute(currentCall.id, args);
-            output = r.content();
-            isError = r.isError();
+            ToolResult r = def.execute(currentCall.id, argsOf(currentCall));
+            return new ToolOutcome(currentCall, r.content(), r.isError(), OutcomeKind.EXECUTED);
         } catch (Exception e) {
-            output = "工具执行失败: " + e.getMessage();
-            isError = true;
-            executeFailure = true; // 唯一触发并行组 fail-fast 的异常来源；钩子失败与 isError 结果均不算
+            // execute 抛异常是并行组 fail-fast 的唯一触发来源；钩子失败与 isError 结果均不算
             log.warn("工具 {} 执行失败", currentCall.name, e);
+            return new ToolOutcome(currentCall, "工具执行失败: " + e.getMessage(), true, OutcomeKind.EXECUTE_FAILED);
         }
-        return new ToolOutcome(currentCall, output, isError, true, true, executeFailure);
+    }
+
+    /** 工具调用参数的 null 安全访问（ToolCall.arguments 协议上可空）。 */
+    private static Map<String, Object> argsOf(Message.ToolCall tc) {
+        return tc.arguments != null ? tc.arguments : Map.of();
     }
 
     /**
@@ -333,67 +335,119 @@ public class AgentLoop {
 
     /**
      * 并行执行一个全 READ_ONLY 连续段：全部提交 daemon 线程池，按 LLM 发出顺序回收结果。
-     * fail-fast：任一任务 execute 抛异常（或任务级异常）→ {@code Future.cancel(true)} 取消同组兄弟，
-     * 被取消者构造 isError「cancelled」结果、已完成结果保留，整轮不中断（LLM 下一轮看到错误集）。
+     * <p>
+     * 事件按完成时序由工作线程发射：worker 完成即走 afterToolCall + ToolResultEvent（claim 原子位仲裁，
+     * 每槽位只发射一次）。响应式 fail-fast：主线程以 ExecutorCompletionService 轮询完成态（25ms 片），
+     * 任一任务 execute 抛异常或回合触发器置位 → 立即 claim + {@code cancel(true)} 全部未完成兄弟
+     * （不看 LLM 位置），被取消者构造 isError「cancelled」结果；已 claim（=已完成）的兄弟结果保留。
      * 钩子的 BLOCK / hook-failed / 工具 isError 结果均非异常，不触发 fail-fast，兄弟照跑（per-tool 独立票决）。
-     * 中止：收集循环每一轮检查回合触发器，置位则同样 cancel 组内未完成者。
+     * </p>
      */
     private void executeGroupParallel(List<Message.ToolCall> group, Message[] orderedResults, int base,
                                       InterruptTrigger trigger, EventSink sink) {
         ExecutorService ex = ensureToolExecutor();
-        List<Future<ToolOutcome>> futures = new ArrayList<>(group.size());
-        for (Message.ToolCall tc : group) {
-            futures.add(ex.submit(() -> runToolCall(tc, sink)));
-        }
-        boolean failed = false;
-        for (int i = 0; i < group.size(); i++) {
-            Future<ToolOutcome> f = futures.get(i);
-            if (!failed && trigger.isCancelled()) failed = true; // 已提交的组遇中止：取消未完成者
-            ToolOutcome out;
-            if (failed) {
-                // cancel 返回 false = 已完成：保留其结果；未启动/在途被取消：构造 cancelled 结果
-                if (f.cancel(true)) out = cancelledOutcome(group.get(i));
-                else out = completedOutcome(f, group.get(i));
-            } else {
+        int n = group.size();
+        List<Slot> slots = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) slots.add(new Slot());
+        AtomicBoolean failed = new AtomicBoolean();
+        ExecutorCompletionService<Void> ecs = new ExecutorCompletionService<>(ex);
+        List<Future<Void>> futures = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            Message.ToolCall tc = group.get(i);
+            Slot slot = slots.get(i);
+            futures.add(ecs.submit(() -> {
+                slot.started.set(true);
                 try {
-                    out = f.get();
-                } catch (CancellationException ce) {
-                    out = cancelledOutcome(group.get(i));
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    failed = true;
-                    out = cancelledOutcome(group.get(i));
-                } catch (ExecutionException ee) {
-                    // runToolCall 已兜住工具异常，走到这里只剩任务级意外：按 fail-fast 处理
-                    Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
-                    log.warn("并行工具任务异常", cause);
-                    out = new ToolOutcome(group.get(i), "工具执行失败: " + cause.getMessage(), true, false, true, true);
+                    ToolOutcome o = runToolCall(tc, sink);
+                    if (o.executeFailure()) failed.set(true);
+                    // 完成即发射（完成时序）；claim 输给主线程的取消路径则放弃发射，结果由主线程写
+                    if (slot.claim.compareAndSet(false, true)) slot.result = finishToolOutcome(o, sink);
+                } finally {
+                    slot.done.countDown();
                 }
-                if (out != null && out.executeFailure()) failed = true;
+                return null;
+            }));
+        }
+        boolean aborted = false;
+        int completed = 0;
+        while (completed < n) {
+            // 响应式检查：兄弟失败或回合中止，立即取消全部未完成兄弟（跨 LLM 位置）
+            if (failed.get() || trigger.isCancelled()) {
+                aborted = true;
+                break;
             }
-            orderedResults[base + i] = finishToolOutcome(out, sink);
+            Future<Void> f;
+            try {
+                f = ecs.poll(25, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                aborted = true;
+                break;
+            }
+            if (f == null) continue;
+            completed++;
+            try {
+                f.get(); // runToolCall 已兜住工具异常；任务级意外（罕见）由下方兜底槽位合成失败结果
+            } catch (ExecutionException ee) {
+                log.warn("并行工具任务异常", ee.getCause() != null ? ee.getCause() : ee);
+                failed.set(true);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                aborted = true;
+                break;
+            }
         }
-    }
-
-    private static ToolOutcome cancelledOutcome(Message.ToolCall tc) {
-        return new ToolOutcome(tc, CANCELLED_OUTPUT, true, false, true, false);
-    }
-
-    /** 取消已来不及（任务已完成）：取其完成结果保留；取不到再降级为 cancelled。 */
-    private static ToolOutcome completedOutcome(Future<ToolOutcome> f, Message.ToolCall tc) {
-        try {
-            return f.get();
-        } catch (Exception e) {
-            return cancelledOutcome(tc);
+        if (aborted) {
+            String reason = trigger.isCancelled() ? TURN_ABORTED_OUTPUT : SIBLING_CANCELLED_OUTPUT;
+            for (int i = 0; i < n; i++) {
+                Slot slot = slots.get(i);
+                // claim 先于 cancel：主线程认领即写 cancelled 结果，worker 随后完成时 claim 落空、其结果丢弃
+                if (slot.claim.compareAndSet(false, true)) {
+                    slot.result = finishToolOutcome(cancelledOutcome(group.get(i), reason), sink);
+                }
+                futures.get(i).cancel(true);
+            }
         }
+        // join：等 claim 赢家（worker 或主线程）写完 result。
+        // 被取消的 future 的 get() 立即抛 CancellationException、不等在途 worker 收尾，
+        // 故对已启动的被取消任务额外等 done（中断清理，如 BashTool 杀子进程），上限 10s 兜底。
+        for (int i = 0; i < n; i++) {
+            Slot slot = slots.get(i);
+            try {
+                futures.get(i).get();
+            } catch (CancellationException ce) {
+                if (slot.started.get()) {
+                    try {
+                        slot.done.await(10, TimeUnit.SECONDS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            } catch (ExecutionException ignore) {
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        // 兜底：worker 任务级崩溃未 claim 的槽（runToolCall 已兜工具异常，此为防御），主线程合成失败结果
+        for (int i = 0; i < n; i++) {
+            Slot slot = slots.get(i);
+            if (slot.claim.compareAndSet(false, true)) {
+                slot.result = finishToolOutcome(
+                        new ToolOutcome(group.get(i), "工具执行失败: 任务级异常", true, OutcomeKind.EXECUTE_FAILED), sink);
+            }
+        }
+        for (int i = 0; i < n; i++) orderedResults[base + i] = slots.get(i).result;
     }
 
-    /** 中止/异常收尾：从 from 起把未执行工具全部构造 cancelled 结果（发事件、不走钩子——工具从未执行）。 */
-    private void fillCancelled(Message[] orderedResults, List<Message.ToolCall> toolCalls, int from,
-                               EventSink sink, String text) {
+    /** 取消/中止的合成失败结果：发 ToolResultEvent、不走钩子（工具未正常完成）。 */
+    private static ToolOutcome cancelledOutcome(Message.ToolCall tc, String text) {
+        return new ToolOutcome(tc, text, true, OutcomeKind.CANCELLED);
+    }
+
+    /** 段前中止收尾：从 from 起把未执行工具全部构造中止结果（发事件、不走钩子——工具从未执行）。 */
+    private void fillCancelled(Message[] orderedResults, List<Message.ToolCall> toolCalls, int from, EventSink sink) {
         for (int i = from; i < orderedResults.length; i++) {
-            Message.ToolCall tc = toolCalls.get(i);
-            orderedResults[i] = finishToolOutcome(new ToolOutcome(tc, text, true, false, true, false), sink);
+            orderedResults[i] = finishToolOutcome(cancelledOutcome(toolCalls.get(i), TURN_ABORTED_OUTPUT), sink);
         }
     }
 
@@ -433,6 +487,15 @@ public class AgentLoop {
         return t != null ? t : () -> false;
     }
 
+    /** 并行槽位：claim 原子位仲裁「谁发射事件、谁写结果」（worker 完成 vs 主线程取消），result 由赢家写；
+     *  started/done 用于取消路径上等待在途 worker 的中断清理（如 BashTool 杀子进程）完成后再组装。 */
+    private static final class Slot {
+        final AtomicBoolean claim = new AtomicBoolean();
+        final AtomicBoolean started = new AtomicBoolean();
+        final CountDownLatch done = new CountDownLatch(1);
+        volatile Message result;
+    }
+
     private static void closeQuietly(AutoCloseable c) {
         try {
             c.close();
@@ -466,7 +529,7 @@ public class AgentLoop {
             }
             return sync;
         }
-        Supplier<Boolean> isCancelled = trigger != null ? trigger::isCancelled : () -> false;
+        Supplier<Boolean> isCancelled = trigger::isCancelled; // trigger 由调用方保证非 null（acquireTrigger 兜底）
 
         StringBuilder partialBuffer = new StringBuilder();
         Message result;
@@ -541,18 +604,54 @@ public class AgentLoop {
     }
 
     /**
-     * 单个工具调用的执行决定（内部值对象）——runToolCall 的产物，由主线程按 LLM 顺序收尾落账。
+     * 单个工具调用的执行决定（内部值对象）——runToolCall 的产物；并行组内由 claim 赢家收尾落账。
      *
-     * @param call           生效调用（经 MODIFY 钩子后即替换版本）
-     * @param output         回 LLM 的文本
-     * @param isError        是否失败
-     * @param runAfterHooks  是否走 afterToolCall 观测钩子（未知工具 / hook-failed 不走，票 01 语义）
-     * @param emitResult     是否发射 ToolResultEvent（未知工具不发，与 MVP1 一致）
-     * @param executeFailure 是否 execute 抛异常所致——并行组 fail-fast 的唯一触发条件（钩子 BLOCK、
-     *                       hook-failed 与工具返回的 isError 结果均不算异常）
+     * @param call    生效调用（经 MODIFY 钩子后即替换版本）
+     * @param output  回 LLM 的文本
+     * @param isError 是否失败
+     * @param kind    结果种类，决定观测钩子/事件发射/fail-fast 语义
      */
-    private record ToolOutcome(Message.ToolCall call, String output, boolean isError,
-                               boolean runAfterHooks, boolean emitResult, boolean executeFailure) {
+    private record ToolOutcome(Message.ToolCall call, String output, boolean isError, OutcomeKind kind) {
+        boolean runAfterHooks() {
+            return kind.runAfterHooks;
+        }
+
+        boolean emitResult() {
+            return kind.emitResult;
+        }
+
+        boolean executeFailure() {
+            return kind.executeFailure;
+        }
+    }
+
+    /**
+     * 工具结果种类——承载「是否走 after 钩子 / 是否发 ToolResultEvent / 是否触发 fail-fast」三态，
+     * 取代此前三个布尔字段的手搓组合。
+     */
+    private enum OutcomeKind {
+        /** 工具正常执行完（成功或工具自返 isError）。 */
+        EXECUTED(true, true, false),
+        /** execute 抛异常——并行组 fail-fast 的唯一触发。 */
+        EXECUTE_FAILED(true, true, true),
+        /** 钩子 BLOCK 短路：未执行，发事件且走 after 钩子（票 01 语义）。 */
+        BLOCKED(true, true, false),
+        /** 钩子自身异常：未执行，发事件但不走 after 钩子。 */
+        HOOK_FAILED(false, true, false),
+        /** 未知工具：不发任何工具事件（与 MVP1 一致）。 */
+        UNKNOWN(false, false, false),
+        /** 取消/中止的合成结果（兄弟失败或回合中止）：发事件、不走钩子（工具未正常完成）。 */
+        CANCELLED(false, true, false);
+
+        final boolean runAfterHooks;
+        final boolean emitResult;
+        final boolean executeFailure;
+
+        OutcomeKind(boolean runAfterHooks, boolean emitResult, boolean executeFailure) {
+            this.runAfterHooks = runAfterHooks;
+            this.emitResult = emitResult;
+            this.executeFailure = executeFailure;
+        }
     }
 
     /**
