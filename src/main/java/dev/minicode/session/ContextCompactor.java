@@ -34,14 +34,20 @@ public final class ContextCompactor {
         this.cfg = cfg;
     }
 
+    /** 自动压缩触发阈值（token）：窗口 - 预留，与 {@link #shouldCompact} 同一判定基准。 */
+    public long compactionThresholdTokens() {
+        return Math.max(0, cfg.contextWindowTokens() - cfg.reserveTokens());
+    }
+
     /** 触发判定：history 估算 token 超阈值。 */
     public boolean shouldCompact(List<Message> history) {
         int tokens = estimateTokensWithGuards(history, null);
-        return tokens > Math.max(0, cfg.contextWindowTokens() - cfg.reserveTokens());
+        return tokens > compactionThresholdTokens();
     }
 
-    /** 带两条护栏的 token 估算：usage 优先（仅与 currentModel 同模型的条目采，否则视作丢弃），剩余走 chars/4。 */
-    int estimateTokensWithGuards(List<Message> history, String currentModel) {
+    /** 带两条护栏的 token 估算：usage 优先（仅与 currentModel 同模型的条目采，否则视作丢弃），剩余走 chars/4。
+     *  公开化：供 {@code /session}、{@code /compact} 斜杠命令展示与对比使用（见 .scratch/slash-commands）。 */
+    public int estimateTokensWithGuards(List<Message> history, String currentModel) {
         if (history == null || history.isEmpty()) return 0;
         int n = 0;
         for (Message m : history) {

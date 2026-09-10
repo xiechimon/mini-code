@@ -29,6 +29,7 @@ class MainReplTest {
         assertTrue(Main.isExitCommand("EXIT"));
         assertTrue(Main.isExitCommand("quit"));
         assertTrue(Main.isExitCommand("/exit"));
+        assertTrue(Main.isExitCommand("/quit"));
         assertFalse(Main.isExitCommand("exits"));
         assertFalse(Main.isExitCommand("帮我退出吗"));
     }
@@ -43,6 +44,16 @@ class MainReplTest {
     void filterPipeLinesEmpty() {
         assertTrue(Main.filterPipeLines(List.of("  ", "")).isEmpty());
         assertTrue(Main.filterPipeLines(List.of("quit")).isEmpty());
+    }
+
+    /**
+     * 管道透传锁定：斜杠命令属交互编辑器层概念（对齐 pi），管道/批处理输入中的 /xxx 行
+     * 原样发给 LLM，不解析、不拦截；遇退出命令仍截断。见 .scratch/slash-commands/spec.md。
+     */
+    @Test
+    void filterPipeLinesPassesSlashCommandsThrough() {
+        List<String> out = Main.filterPipeLines(List.of("/compact", "正常问题", "/quit", "不应到达"));
+        assertEquals(List.of("/compact", "正常问题"), out);
     }
 
     /**

@@ -69,6 +69,11 @@ public final class SessionManager implements AutoCloseable {
         return filePath;
     }
 
+    /** 会话 id（文件头同源 uuid），供 {@code /session} 展示。 */
+    public String sessionId() {
+        return sessionId;
+    }
+
     @Override
     public void close() throws IOException {
         store.close();

@@ -18,6 +18,7 @@ import org.jline.reader.Reference;
 import org.jline.reader.UserInterruptException;
 import org.jline.reader.impl.DefaultParser;
 import org.jline.reader.impl.LineReaderImpl;
+import org.jline.reader.impl.completer.StringsCompleter;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
@@ -107,7 +108,7 @@ public class Main {
         }
 
         // 无参：REPL 多轮对话模式（解决“第一轮后自动退出”）
-        System.out.println("[mini-code] 进入交互式 REPL（输入需求后回车，输入 exit/quit 退出）");
+        System.out.println("[mini-code] 进入交互式 REPL（输入需求后回车，/help 查看命令，exit/quit 退出）");
         LlmConfig cfgRepl = LlmConfig.resolve();
         // 启动横幅一行：mini-code · provider/model · 工作目录（名称粗体、其余暗灰），去色时纯文本
         Style bannerStyle = Style.detect(System.getenv(), System.console() != null);
@@ -133,6 +134,11 @@ public class Main {
         }
         List<Message> history = session != null ? new SessionHistory(session) : new ArrayList<>();
         ContextCompactor compactor = session != null ? new ContextCompactor(session) : null;
+        // 斜杠命令：注册表 + 会话上下文（命令操作面）。管道模式不解析命令，仅交互路径使用
+        SlashDispatcher slash = new SlashDispatcher(SlashCommands.builtins());
+        ReplContext replCtx = new ReplContext(workdir, llmRepl, toolsRepl, buildSystemPrompt(workdir),
+                replTriggerSupplier, System.out, Style.detect(System.getenv(), System.console() != null),
+                loopRepl, modelRepl, history, session, compactor, slash);
         // 区分管道 vs 交互式终端：System.console()==null 表示管道/重定向，此时一次性读完所有行后退出，避免 hasNextLine 阻塞
         if (System.console() == null) {
             // 管道模式：一次性读取 stdin 所有内容，按行处理；不启用流式与重绘，走同步路径，零流式事件
@@ -161,11 +167,11 @@ public class Main {
                 System.err.println("[mini-code] 终端初始化失败，回退到简单输入模式（方向键可能显示为 ^[[D）: " + e.getMessage());
             }
             if (terminal == null) {
-                runScannerRepl(history, loopRepl, buildTurnComplete(compactor, llmRepl, modelRepl, workdir, history));
+                runScannerRepl(history, loopRepl, buildTurnComplete(compactor, llmRepl, modelRepl, workdir, history), replCtx);
             } else {
                 try (Terminal t = terminal) {
                     runJLineRepl(t, history, loopRepl, defaultHistoryPath(),
-                            buildTurnComplete(compactor, llmRepl, modelRepl, workdir, history));
+                            buildTurnComplete(compactor, llmRepl, modelRepl, workdir, history), replCtx);
                 } catch (IOException e) {
                     System.err.println("[mini-code] 关闭终端失败: " + e.getMessage());
                 }
@@ -244,6 +250,22 @@ public class Main {
      * @return 配置好的 LineReader
      */
     static LineReader createReader(Terminal terminal, Path historyPath) throws IOException {
+        return createReader(terminal, historyPath, SlashCommands.completionNames(null));
+    }
+
+    /**
+     * 创建带持久化历史、多行支持与斜杠命令 Tab 补全的 LineReader。
+     * <p>
+     * 补全仅作用于首 token（{@code line.wordIndex() == 0}），候选来自调度器注册表 +
+     * {@code /exit} {@code /quit}——与 {@code /help} 同一份注册表，两者不会漂移。
+     * </p>
+     *
+     * @param terminal            终端
+     * @param historyPath         历史文件路径（可为 null 表示不持久化）
+     * @param completionCandidates 首 token 补全候选（null/空 = 不安装补全）
+     * @return 配置好的 LineReader
+     */
+    static LineReader createReader(Terminal terminal, Path historyPath, List<String> completionCandidates) throws IOException {
         if (historyPath != null) {
             try {
                 Path parent = historyPath.toAbsolutePath().getParent();
@@ -264,6 +286,13 @@ public class Main {
                 .option(LineReader.Option.HISTORY_TIMESTAMPED, false)
                 .option(LineReader.Option.HISTORY_INCREMENTAL, true)
                 .option(LineReader.Option.BRACKETED_PASTE, true);
+        if (completionCandidates != null && !completionCandidates.isEmpty()) {
+            builder.completer((r, line, candidates) -> {
+                if (line.wordIndex() == 0) {
+                    new StringsCompleter(completionCandidates).complete(r, line, candidates);
+                }
+            });
+        }
         LineReader reader = builder.build();
         // —— 护栏：为何反射 ——
         // 背景：JLine 3.27.1 在 dumb/ExternalTerminal 下默认 keyMap 为 "dumb"，未绑定 BRACKETED_PASTE 的 begin 序列 "\u001B[200~"；
@@ -298,15 +327,24 @@ public class Main {
      * </p>
      */
     static void runJLineRepl(Terminal terminal, List<Message> history, AgentLoop loop) throws Exception {
-        runJLineRepl(terminal, history, loop, defaultHistoryPath(), null);
+        runJLineRepl(terminal, history, loop, defaultHistoryPath(), null, null);
+    }
+
+    static void runJLineRepl(Terminal terminal, List<Message> history, AgentLoop loop, Path historyPath,
+                             Runnable onTurnComplete) throws Exception {
+        runJLineRepl(terminal, history, loop, historyPath, onTurnComplete, null);
     }
 
     /**
-     * JLine 交互循环（支持 turn-end 钩子，供压缩等使用）。
+     * JLine 交互循环（支持 turn-end 钩子与斜杠命令）。
      * <p>JLine 历史在首次 readLine 时 attach 并加载，此后增量落盘。</p>
+     * <p>斜杠命令在退出检查之后、回合派发之前拦截：HANDLED 跳过本轮 LLM 调用与 onTurnComplete
+     * （无 LLM 回合不触发自动压缩）；NOT_A_COMMAND 原样发给 LLM（pi fallthrough 终点语义）。</p>
+     *
+     * @param ctx REPL 会话上下文；null 表示不启用斜杠命令
      */
     static void runJLineRepl(Terminal terminal, List<Message> history, AgentLoop loop, Path historyPath,
-                             Runnable onTurnComplete) throws Exception {
+                             Runnable onTurnComplete, ReplContext ctx) throws Exception {
         Style style = Style.detect(System.getenv(), true);
         if (terminal != null && "dumb".equals(terminal.getType())) {
             style = Style.PLAIN;
@@ -314,7 +352,7 @@ public class Main {
             style = Style.PLAIN;
         }
         String promptStr = prompt(style);
-        LineReader reader = createReader(terminal, historyPath);
+        LineReader reader = createReader(terminal, historyPath, SlashCommands.completionNames(ctx != null ? ctx.dispatcher() : null));
         while (true) {
             String line;
             try {
@@ -335,6 +373,17 @@ public class Main {
             if (isExitCommand(trimmed)) {
                 System.out.println("[mini-code] 再见");
                 break;
+            }
+            if (ctx != null && ctx.dispatcher() != null && trimmed.startsWith("/")) {
+                SlashDispatcher.Result r = ctx.dispatcher().dispatch(trimmed, ctx);
+                if (r == SlashDispatcher.Result.HANDLED) {
+                    try { reader.getHistory().save(); } catch (IOException ignored) {}
+                    continue;
+                }
+                if (r == SlashDispatcher.Result.EXIT) {
+                    System.out.println("[mini-code] 再见");
+                    break;
+                }
             }
             int renderWidth = terminalWidth(terminal);
             int renderHeight = terminalHeight(terminal);
@@ -395,10 +444,19 @@ public class Main {
      * 降级输入循环：终端初始化失败时使用，无行编辑能力（方向键显示为 ^[[D）。
      */
     static void runScannerRepl(List<Message> history, AgentLoop loop) throws Exception {
-        runScannerRepl(history, loop, null);
+        runScannerRepl(history, loop, null, null);
     }
 
     static void runScannerRepl(List<Message> history, AgentLoop loop, Runnable onTurnComplete) throws Exception {
+        runScannerRepl(history, loop, onTurnComplete, null);
+    }
+
+    /**
+     * Scanner 降级循环（支持 turn-end 钩子与斜杠命令，拦截语义同 {@link #runJLineRepl}）。
+     *
+     * @param ctx REPL 会话上下文；null 表示不启用斜杠命令
+     */
+    static void runScannerRepl(List<Message> history, AgentLoop loop, Runnable onTurnComplete, ReplContext ctx) throws Exception {
         java.util.Scanner scanner = new java.util.Scanner(System.in, StandardCharsets.UTF_8);
         Style style = Style.detect(System.getenv(), true);
         String promptStr = prompt(style);
@@ -416,6 +474,16 @@ public class Main {
                 System.out.println("[mini-code] 再见");
                 break;
             }
+            if (ctx != null && ctx.dispatcher() != null && trimmed.startsWith("/")) {
+                SlashDispatcher.Result r = ctx.dispatcher().dispatch(trimmed, ctx);
+                if (r == SlashDispatcher.Result.HANDLED) {
+                    continue;
+                }
+                if (r == SlashDispatcher.Result.EXIT) {
+                    System.out.println("[mini-code] 再见");
+                    break;
+                }
+            }
             // 降级输入也走流式路径，与 JLine 交互同款（SIGINT 由 loop 的 triggerSupplier 接管）
             runReplTurn(line, history, loop, style, width, height);
             if (onTurnComplete != null) onTurnComplete.run();
@@ -423,12 +491,17 @@ public class Main {
     }
 
     /**
-     * 是否退出命令（exit/quit//exit，大小写不敏感）。
+     * 是否退出命令（exit/quit//exit//quit，大小写不敏感）。
+     * <p>
+     * 退出不注册进斜杠命令表：管道截断（{@link #filterPipeLines}）与交互循环共用本特判，
+     * 对齐 pi 的 /quit 命名（见 .scratch/slash-commands/spec.md）。
+     * </p>
      */
     static boolean isExitCommand(String trimmed) {
         return trimmed.equalsIgnoreCase("exit")
                 || trimmed.equalsIgnoreCase("quit")
-                || trimmed.equalsIgnoreCase("/exit");
+                || trimmed.equalsIgnoreCase("/exit")
+                || trimmed.equalsIgnoreCase("/quit");
     }
 
     /**
