@@ -4,7 +4,7 @@
 
 **Blocked by:** 01（已解决）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## 交付物
 
