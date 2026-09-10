@@ -1,4 +1,6 @@
 .classpath
+.claude/
+.codegraph/
 .DS_Store
 .env
 .idea/
