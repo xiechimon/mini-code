@@ -30,6 +30,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 命令行入口，对应 pi-coding-agent 的 cli（极简版）。
@@ -108,7 +109,7 @@ public class Main {
         }
 
         // 无参：REPL 多轮对话模式（解决“第一轮后自动退出”）
-        System.out.println("[mini-code] 进入交互式 REPL（输入需求后回车，/help 查看命令，exit/quit 退出）");
+        System.out.println("[mini-code] 进入交互式 REPL（输入需求后回车，/help 查看命令，exit/quit 退出；生成中 Esc 或 Ctrl-C 中断）");
         LlmConfig cfgRepl = LlmConfig.resolve();
         // 启动横幅一行：mini-code · provider/model · 工作目录（名称粗体、其余暗灰），去色时纯文本
         Style bannerStyle = Style.detect(System.getenv(), System.console() != null);
@@ -120,8 +121,10 @@ public class Main {
         LlmClient llmRepl = new OpenAiCompatClient(cfgRepl.apiKey());
         Model modelRepl = cfgRepl.model();
         List<ToolDefinition> toolsRepl = List.of(new ReadTool(workdir), new WriteTool(workdir), new EditTool(workdir), new BashTool(workdir));
-        // REPL 的流式触发器：交互式流式期间注册 SIGINT 映射到取消信号，结束后注销恢复原语义
-        java.util.function.Supplier<InterruptTrigger> replTriggerSupplier = () -> new SigIntInterruptTrigger();
+        // REPL 的流式触发器：交互终端可用时（Esc/Ctrl-C 中断），terminal 构建前先占位 AtomicReference，
+        // 构建后再 set；supplier 在每回合 acquireTrigger 时才取值（懒求值），保证拿到的是当前终端。
+        AtomicReference<Terminal> terminalRef = new AtomicReference<>();
+        java.util.function.Supplier<InterruptTrigger> replTriggerSupplier = () -> new TerminalInterruptTrigger(terminalRef.get());
         AgentLoop loopRepl = new AgentLoop(llmRepl, modelRepl, buildSystemPrompt(workdir), toolsRepl, 20, replTriggerSupplier);
         // 会话持久化：REPL 多轮 append-only 树；建会话失败则降级为纯内存 history（不中断 REPL）
         SessionManager session = null;
@@ -168,8 +171,10 @@ public class Main {
                 System.err.println("[mini-code] 终端初始化失败，回退到简单输入模式（方向键可能显示为 ^[[D）: " + e.getMessage());
             }
             if (terminal == null) {
+                // 终端构建失败：replTriggerSupplier 拿不到终端，仅 SIGINT 生效
                 runScannerRepl(history, loopRepl, buildTurnComplete(replCtx), replCtx);
             } else {
+                terminalRef.set(terminal); // 触发器 supplier 在每回合取值时拿到真实终端，Esc/Ctrl-C 都生效
                 try (Terminal t = terminal) {
                     runJLineRepl(t, history, loopRepl, defaultHistoryPath(),
                             buildTurnComplete(replCtx), replCtx);
@@ -630,8 +635,8 @@ public class Main {
      * <p>
      * 交互流式路径：持有 {@link BlockStreamer}（块边界检测 + 单行进度指示）并在 EventSink 中处理
      * {@link AgentEvent.MessageUpdate} 的直出与首片段覆盖、MessageEnd 的回退重绘与 aborted 标记；
-     * SIGINT 映射由 AgentLoop 的 triggerSupplier（SigIntInterruptTrigger）在流式期间注册/注销，
-     * 保证 Ctrl-C 仅取消本轮生成而不退进程，且结束后恢复 JLine 的弃行语义。
+     * SIGINT 映射与 Esc 监听由 AgentLoop 的 triggerSupplier（{@link TerminalInterruptTrigger}）在流式期间接管，
+     * 保证 Ctrl-C / 裸 Esc 仅取消本轮生成而不退进程；回合结束 close() 时还原终端属性，JLine 恢复弃行/退出语义。
      * </p>
      */
     static void runReplTurn(String prompt, List<Message> history, AgentLoop loop, Style style, int width, int viewportRows) throws Exception {

@@ -554,26 +554,17 @@ class OpenAiCompatClientStreamingTest {
     // ===== 7. 冒烟：真实网关（有 key 时）=====
     @Test
     void realGatewaySmokeIfKeyPresent() throws Exception {
-        // 仅当本地有 .env 或环境变量提供 OPENCODE_API_KEY 时执行，否则跳过
-        String apiKey = System.getenv("OPENCODE_API_KEY");
+        // model 与 key 同源：一律走 LlmConfig.resolve()（.env/环境变量显式配置优先，
+        // auth.json 仅兜底），避免「model 按 .env 的 anthropic、key 却捡到 auth.json 的 opencode」错位
+        dev.minicode.ai.LlmConfig cfg = dev.minicode.ai.LlmConfig.resolve();
+        String apiKey = cfg.apiKey();
         if (apiKey == null || apiKey.isBlank()) {
-            // 尝试从 .env 加载（向上查找）
-            java.util.Map<String,String> env = dev.minicode.ai.Dotenv.load();
-            apiKey = env.get("OPENCODE_API_KEY");
-        }
-        // 也尝试从 LlmConfig（会读 auth.json）
-        if (apiKey == null || apiKey.isBlank()) {
-            dev.minicode.ai.LlmConfig cfg = dev.minicode.ai.LlmConfig.resolve();
-            apiKey = cfg.apiKey();
-        }
-        if (apiKey == null || apiKey.isBlank()) {
-            System.out.println("[smoke] 跳过真实网关冒烟：未找到 OPENCODE_API_KEY");
+            System.out.println("[smoke] 跳过真实网关冒烟：未找到当前 provider 的 API key");
             return;
         }
         // 有 key 时，做一次真实流式请求，验证与 spike 一致
-        dev.minicode.ai.LlmConfig cfg = dev.minicode.ai.LlmConfig.resolve();
-        Model model = cfg.model(); // 默认 mimo-v2.5 或 kimi
-        OpenAiCompatClient client = new OpenAiCompatClient();
+        Model model = cfg.model();
+        OpenAiCompatClient client = new OpenAiCompatClient(apiKey);
         List<String> deltas = Collections.synchronizedList(new ArrayList<>());
         Context ctx = new Context("you are helpful", List.of(Message.user("Say hello in Chinese, one sentence, no tool calls, answer directly with '你好，世界！'")), List.of());
         Message out = client.stream(model, ctx, deltas::add);

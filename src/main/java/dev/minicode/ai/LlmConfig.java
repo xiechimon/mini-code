@@ -34,14 +34,16 @@ public record LlmConfig(Model model, String apiKey) {
         String apiKey = env.getOrDefault("LLM_API_KEY", null);
 
         // 2) 按 provider 查找对应的环境变量（对齐 pi-ai env-api-keys.ts）
+        //    auth.json 仅在 .env/环境变量均未给该 provider 配 key 时兜底，
+        //    避免 .env 显式配了 provider 却被 auth.json 旧 key 劫持
         if (apiKey == null) {
             apiKey = switch (provider) {
                 case "opencode", "opencode-go" ->
                         firstNonNull(env.get("OPENCODE_API_KEY"), tryReadOpencodeAuth(provider));
-                case "deepseek" -> env.get("DEEPSEEK_API_KEY");
+                case "deepseek" -> firstNonNull(env.get("DEEPSEEK_API_KEY"), tryReadOpencodeAuth(provider));
                 case "openai" -> env.get("OPENAI_API_KEY");
-                case "anthropic" -> firstNonNull(env.get("ANTHROPIC_API_KEY"), env.get("ANTHROPIC_AUTH_TOKEN"));
-                case "minimax-cn" -> env.get("MINIMAX_CN_API_KEY");
+                case "anthropic" -> firstNonNull(env.get("ANTHROPIC_AUTH_TOKEN"), env.get("ANTHROPIC_API_KEY"));
+                case "minimax-cn" -> firstNonNull(env.get("MINIMAX_CN_API_KEY"), tryReadOpencodeAuth(provider));
                 default -> null;
             };
         }
@@ -86,15 +88,16 @@ public record LlmConfig(Model model, String apiKey) {
     }
 
     /**
-     * 按 provider 查询对应的环境变量中的 API Key，供 OpenAiCompatClient 复用，避免两处维护同一张映射表
+     * 按 provider 查询对应的环境变量中的 API Key，供 OpenAiCompatClient 复用，避免两处维护同一张映射表。
+     * 与 {@link #resolve} 同策略：env 优先，auth.json 仅兜底（fallback 参数即兜底值）。
      */
     static String apiKeyForProvider(String provider, Map<String, String> env, String fallback) {
         String key = switch (provider) {
             case "opencode", "opencode-go" -> firstNonNull(env.get("OPENCODE_API_KEY"), fallback);
-            case "deepseek" -> env.get("DEEPSEEK_API_KEY");
+            case "deepseek" -> firstNonNull(env.get("DEEPSEEK_API_KEY"), fallback);
             case "openai" -> env.get("OPENAI_API_KEY");
             case "anthropic" -> firstNonNull(env.get("ANTHROPIC_API_KEY"), env.get("ANTHROPIC_AUTH_TOKEN"));
-            case "minimax-cn" -> env.get("MINIMAX_CN_API_KEY");
+            case "minimax-cn" -> firstNonNull(env.get("MINIMAX_CN_API_KEY"), fallback);
             default -> null;
         };
         return key != null ? key : fallback;
