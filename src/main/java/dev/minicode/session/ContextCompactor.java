@@ -36,8 +36,24 @@ public final class ContextCompactor {
 
     /** 触发判定：history 估算 token 超阈值。 */
     public boolean shouldCompact(List<Message> history) {
-        int tokens = estimateTokens(history);
+        int tokens = estimateTokensWithGuards(history, null);
         return tokens > Math.max(0, cfg.contextWindowTokens() - cfg.reserveTokens());
+    }
+
+    /** 带两条护栏的 token 估算：usage 优先（仅与 currentModel 同模型的条目采，否则视作丢弃），剩余走 chars/4。 */
+    int estimateTokensWithGuards(List<Message> history, String currentModel) {
+        if (history == null || history.isEmpty()) return 0;
+        int n = 0;
+        for (Message m : history) {
+            // 跨模型护栏：usage 来源与当前 model 不一致则丢弃该 usage
+            if (m.usage != null && m.usage.totalTokens != null
+                    && (currentModel == null || currentModel.equals(m.modelId()))) {
+                n += m.usage.totalTokens;
+                continue;
+            }
+            n += CompactionConfig.estimateTokens(m.text());
+        }
+        return n;
     }
 
     /**

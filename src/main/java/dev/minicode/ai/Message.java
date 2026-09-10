@@ -119,7 +119,19 @@ public class Message {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public MessageUsage usage;
 
+    /**
+     * 产生本条消息的模型 id（{@code Model.id}），用于跨模型防误伤护栏（见 {@code docs/adr/0004}）。
+     * 非必填；chat/stream 入口处不强制注入，但 Provider 端可写：OpenAiCompatClient.stream 把当前 model.id 灌入。
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public String modelId;
+
     public Message() {
+    }
+
+    /** 便捷访问：优先读取 modelId（非 null 时返回）。让调用处不必 import model setter API。 */
+    public String modelId() {
+        return modelId;
     }
 
     public Message(Role role, List<Content> content) {
