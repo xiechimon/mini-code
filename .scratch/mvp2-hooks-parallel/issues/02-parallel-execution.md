@@ -36,4 +36,10 @@
 
 ## Comments
 
-（实现过程中的决策追加于此）
+2026-09-10（implementer 02）：
+- **trigger 生命周期**：未按初稿「每段再取触发器」，改为**每回合一次 acquire、finally 一次 close**，stream 与工具段共用（`triggerCloseIsCalledAfterStream` 固定 close 次数=回合数，另取会破坏零回归）；回合级取消检查每段开始前读该回合触发器。
+- **池创建时机**：`ensureToolExecutor()` 在真正出现 >1 元素的 READ_ONLY 段时才懒建（非仅 toolCalls.size()>1）；全串行回合不建池，行为更省且无可观测差异。
+- **事件并发**：并行下 ToolStart/ToolResultEvent 按完成时序、可交错发射（符合票），但经 `eventLock` 串行化 `sink.on`——sink 实现（如测试 ArrayList）不被并发调用。
+- **fail-fast 触发条件落点**：`runToolCall` 内 execute 异常 = executeFailure 标记（唯一触发）；BLOCK / hook-failed / 工具返回 isError 结果均不触发，兄弟照跑（per-tool 独立票决语义保持）。
+- **取消竞态端**：兄弟被 `cancel(true)` 时若已带着中断完成（cancel 落空），保留其完成结果（「已完成的结果保留」）；否则构造 cancelled 结果——测试两端断言 isError+cancelled 语义。
+- **未知工具视作 STATEFUL**：独立单元素段串行短路，钩子与事件语义与 MVP1/票01 完全一致。

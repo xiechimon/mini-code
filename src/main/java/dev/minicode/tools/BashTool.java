@@ -13,6 +13,11 @@ import java.util.concurrent.TimeUnit;
 /**
  * 执行 Bash 命令的工具，对应 pi 的 harness/tools/bash.ts
  * 在工作目录下执行，返回 stdout/stderr，超长按 2000 行/50KB 截断。
+ * <p>
+ * execute 无 signal 参数（有意偏离 pi，见 docs/adr/0005）：取消依赖线程中断——
+ * {@code Future.cancel(true)} 中断 {@code proc.waitFor} 后 {@code destroyForcibly} 进程，
+ * 不留下孤儿子进程。
+ * </p>
  */
 public class BashTool implements ToolDefinition {
 
@@ -96,7 +101,15 @@ public class BashTool implements ToolDefinition {
         outT.start();
         errT.start();
 
-        boolean finished = proc.waitFor(timeout, TimeUnit.MILLISECONDS);
+        boolean finished;
+        try {
+            finished = proc.waitFor(timeout, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            // 并行组内被 Future.cancel(true) 中断：销毁进程 + 恢复中断位（见 docs/adr/0005）
+            proc.destroyForcibly();
+            Thread.currentThread().interrupt();
+            return ToolResult.error("命令被中断");
+        }
         if (!finished) {
             proc.destroyForcibly();
             return ToolResult.error("命令超时（" + timeout + "ms）: " + command);
