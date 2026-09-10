@@ -1,11 +1,13 @@
 package dev.minicode.cli;
 
 import dev.minicode.ai.Message;
+import dev.minicode.ai.Model;
 import dev.minicode.session.ContextCompactor;
 import dev.minicode.session.SessionHistory;
 import dev.minicode.session.SessionManager;
 
 import java.io.PrintStream;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -34,6 +36,9 @@ public final class SlashCommands {
         m.put("help", new Entry("列出全部命令与说明", SlashCommands::help));
         m.put("session", new Entry("显示会话文件、sessionId、消息数与 token 估算", SlashCommands::session));
         m.put("compact", new Entry("立即压缩上下文（无视自动阈值）", SlashCommands::compact));
+        m.put("model", new Entry("查看当前模型；/model <id> 切换（限同 provider）", SlashCommands::model));
+        m.put("new", new Entry("开新会话（旧会话 JSONL 留盘）", SlashCommands::newSession));
+        m.put("export", new Entry("导出会话 JSONL：/export [file]", SlashCommands::export));
         return m;
     }
 
@@ -114,6 +119,71 @@ public final class SlashCommands {
         int after = compactor.estimateTokensWithGuards(history, modelId);
         out.println("[mini-code] 已压缩上下文：~" + before + " → ~" + after + " token"
                 + "（保留段 " + kept.size() + " 条，完整会话存于 JSONL）");
+    }
+
+    /** /model：无参显示当前模型；带参在同 provider 内切换 id。 */
+    private static void model(String args, ReplContext ctx) {
+        PrintStream out = ctx.out();
+        Model cur = ctx.model();
+        if (cur == null) {
+            out.println("[mini-code] 模型不可用（未配置）");
+            return;
+        }
+        if (args.isEmpty()) {
+            out.println(bold(ctx, "当前模型"));
+            out.println("  " + dim(ctx, "provider: ") + cur.provider());
+            out.println("  " + dim(ctx, "model:    ") + cur.id());
+            out.println("  " + dim(ctx, "baseUrl:  ") + cur.baseUrl());
+            return;
+        }
+        // v1 限同 provider：参数即模型 id；含 / 或 : 的写法按跨 provider 意图拒绝（见 docs/adr/0006）
+        if (args.contains("/") || args.contains(":")) {
+            out.println("[mini-code] v1 仅支持同 provider 内切换模型 id（收到 " + args
+                    + "）；跨 provider 请设 LLM_PROVIDER 等环境变量后重启");
+            return;
+        }
+        String from = cur.id();
+        ctx.switchModel(args);
+        out.println("[mini-code] 已切换模型：" + from + " → " + args + "（provider " + cur.provider() + " 不变）");
+    }
+
+    /** /new：关旧会话、建新会话、清内存 history、重建压缩器；降级模式下为重试建会话。 */
+    private static void newSession(String args, ReplContext ctx) {
+        PrintStream out = ctx.out();
+        try {
+            ctx.newSession();
+            out.println("[mini-code] 已开新会话：" + ctx.session().filePath());
+        } catch (Exception e) {
+            out.println("[mini-code] 新建会话失败：" + e.getMessage());
+        }
+    }
+
+    /** /export [file]：会话 JSONL 复制到目标；无参默认 ./session-<时间戳>.jsonl；已存在不覆盖。 */
+    private static void export(String args, ReplContext ctx) {
+        PrintStream out = ctx.out();
+        if (ctx.session() == null) {
+            out.println("[mini-code] 导出不可用（降级模式：无持久化会话）");
+            return;
+        }
+        Path target;
+        if (args.isEmpty()) {
+            String ts = java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+                    .withZone(java.time.ZoneId.systemDefault()).format(java.time.Instant.now());
+            target = ctx.workdir().resolve("session-" + ts + ".jsonl");
+        } else {
+            target = Path.of(args);
+            if (!target.isAbsolute()) {
+                target = ctx.workdir().resolve(target);
+            }
+        }
+        try {
+            ctx.exportSession(target);
+            out.println("[mini-code] 已导出会话 → " + target);
+        } catch (java.nio.file.FileAlreadyExistsException e) {
+            out.println("[mini-code] 导出失败：目标已存在 " + target + "（换个文件名重试）");
+        } catch (Exception e) {
+            out.println("[mini-code] 导出失败：" + e.getMessage());
+        }
     }
 
     // ===== 样式辅助（命令输出统一走 Style 常量，去色环境纯文本） =====

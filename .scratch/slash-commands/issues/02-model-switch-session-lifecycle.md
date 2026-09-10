@@ -4,7 +4,7 @@
 
 **Blocked by:** 01(斜杠命令调度器内核 + 只读命令)—— 本票在 ReplContext 上扩可变面,复用 01 的调度器与命令注册缝
 
-**Status:** ready-for-agent
+**Status:** resolved（/export 目标已存在时的取舍：报错提示换名，不静默覆盖）
 
 - [ ] ReplContext 可变面:`switchModel(id)`(同 provider/baseUrl/api 重建 Model + 新 AgentLoop 换入,不动 AgentLoop 本体)、`newSession()`(close 旧 → create 新 → 换 SessionHistory 与 ContextCompactor)、`exportSession(target)`(Files.copy;session 为 null 返回不可用提示)
 - [ ] REPL 两循环每轮从 `ctx.currentLoop()` / `ctx.history()` 取活引用;`runReplTurn` 两变体签名不动

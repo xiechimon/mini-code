@@ -63,7 +63,7 @@ class SlashDispatcherTest {
         ContextCompactor compactor = f.session != null
                 ? new ContextCompactor(f.session, new CompactionConfig.Resolved(200_000, 16_384, 5))
                 : null;
-        f.ctx = new ReplContext(tmp, fakeLlm(), List.of(), "sp", null, out, Style.PLAIN,
+        f.ctx = new ReplContext(tmp, fakeLlm(), List.of(), "sp", null, 20, tmp, out, Style.PLAIN,
                 null, model, history, f.session, compactor, new SlashDispatcher(SlashCommands.builtins()));
         return f;
     }

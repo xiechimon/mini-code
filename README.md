@@ -4,15 +4,20 @@
 
 **对齐标的：** `earendil-works/pi` (TS, 100k stars) — pi 本身就是按「先 loop+工具跑通，再叠能力」做的。本项目用 Java 对齐其核心抽象（抽象名/边界/语义），并保留已记录的有意简化与偏离（见 `docs/adr/0002`）。
 
-## 已完成 — MVP1
+## 已完成 — MVP1 ~ MVP4(斜杠命令)
 
 - **Agent Loop** — `AgentLoop.java` 对齐 `pi/packages/agent/src/agent-loop.ts`：
-  `prompt → LLM → tool_calls → execute → loop`，支持 `length` 截断全量失败、`error/aborted` 终止，顺序执行（并行留到 MVP2）
+  `prompt → LLM → tool_calls → execute → loop`，支持 `length` 截断全量失败、`error/aborted` 终止
 - **Tools 4件套** — `read / write / edit / bash`，协议与截断（2000行/50KB）对齐 pi
 - **LLM 接入** — `OpenAiCompatClient` 走 OpenAI-compat `/chat/completions`，`LlmConfig` 自动解析 `OPENCODE_API_KEY`（优先读
   `~/.local/share/opencode/auth.json`，无 key 时返回 error message 而非抛异常，符合 StreamFn 契约）
 - **CLI** — `dev.minicode.cli.Main`：`java -jar mini-code.jar "prompt"`，systemPrompt 含 workdir，事件打印
-- **验证** — 15 tests 绿 + 真实 LLM E2E：`opencode-go/kimi-k2.6` @ `https://opencode.ai/zen/go/v1` 完成
+- **MVP2 钩子 + 并行** — `ToolHook` before/afterToolCall 三档 ToolDecision（PROCEED/BLOCK/MODIFY）；
+  同回合连续 READ_ONLY 工具并行、STATEFUL 串行，fail-fast 取消兄弟（ADR-0005）
+- **MVP3 流式 + 会话** — SSE 流式渲染（Markdown/ANSI）、append-only JSONL 会话持久化、token 估算驱动的 Context 压缩（ADR-0003/0004）
+- **MVP4 斜杠命令** — REPL 内 `/help` `/session` `/compact` `/model [id]` `/new` `/export [file]` +
+  Tab 补全；注册表调度器 + ReplContext 操作面对齐 pi slash-commands.ts，未识别 `/xxx` 原样发 LLM（ADR-0006）
+- **验证** — 277 tests 绿 + 真实 LLM E2E：`opencode-go/kimi-k2.6` @ `https://opencode.ai/zen/go/v1` 完成
   `read test.txt → write hello.txt` 三轮闭环
 
 ```
@@ -46,9 +51,10 @@ dev.minicode.cli   — Main                                                     
 
 ## 下一步 — 按功能 MVP 迭代
 
-- [ ] **MVP2** `beforeToolCall`/`afterToolCall` 钩子 + tool 执行并行
-- [ ] **MVP3** Streaming SSE + Context 压缩/裁剪 + Session 持久化 (JSONL)
-- [ ] **MVP4** PlanMode / Todo + MCP + TUI
+- [x] **MVP2** `beforeToolCall`/`afterToolCall` 钩子 + tool 执行并行
+- [x] **MVP3** Streaming SSE + Context 压缩/裁剪 + Session 持久化 (JSONL)
+- [x] **MVP4** 斜杠命令（`/help` `/session` `/compact` `/model` `/new` `/export`）
+- [ ] **MVP5** PlanMode / Todo + MCP + TUI
 
 直接提交合入 main，改动验证靠 mvn test 全绿。
 

@@ -125,10 +125,11 @@ public class Main {
         AgentLoop loopRepl = new AgentLoop(llmRepl, modelRepl, buildSystemPrompt(workdir), toolsRepl, 20, replTriggerSupplier);
         // 会话持久化：REPL 多轮 append-only 树；建会话失败则降级为纯内存 history（不中断 REPL）
         SessionManager session = null;
+        String home = System.getProperty("user.home");
+        if (home == null || home.isEmpty()) home = ".";
+        Path sessionsBase = Path.of(home, ".mini-code");
         try {
-            String home = System.getProperty("user.home");
-            if (home == null || home.isEmpty()) home = ".";
-            session = SessionManager.create(Path.of(home, ".mini-code"), workdir.toString());
+            session = SessionManager.create(sessionsBase, workdir.toString());
         } catch (IOException e) {
             System.err.println("[mini-code] 会话初始化失败（降级为不持久化）: " + e.getMessage());
         }
@@ -137,7 +138,7 @@ public class Main {
         // 斜杠命令：注册表 + 会话上下文（命令操作面）。管道模式不解析命令，仅交互路径使用
         SlashDispatcher slash = new SlashDispatcher(SlashCommands.builtins());
         ReplContext replCtx = new ReplContext(workdir, llmRepl, toolsRepl, buildSystemPrompt(workdir),
-                replTriggerSupplier, System.out, Style.detect(System.getenv(), System.console() != null),
+                replTriggerSupplier, 20, sessionsBase, System.out, Style.detect(System.getenv(), System.console() != null),
                 loopRepl, modelRepl, history, session, compactor, slash);
         // 区分管道 vs 交互式终端：System.console()==null 表示管道/重定向，此时一次性读完所有行后退出，避免 hasNextLine 阻塞
         if (System.console() == null) {
@@ -167,11 +168,11 @@ public class Main {
                 System.err.println("[mini-code] 终端初始化失败，回退到简单输入模式（方向键可能显示为 ^[[D）: " + e.getMessage());
             }
             if (terminal == null) {
-                runScannerRepl(history, loopRepl, buildTurnComplete(compactor, llmRepl, modelRepl, workdir, history), replCtx);
+                runScannerRepl(history, loopRepl, buildTurnComplete(replCtx), replCtx);
             } else {
                 try (Terminal t = terminal) {
                     runJLineRepl(t, history, loopRepl, defaultHistoryPath(),
-                            buildTurnComplete(compactor, llmRepl, modelRepl, workdir, history), replCtx);
+                            buildTurnComplete(replCtx), replCtx);
                 } catch (IOException e) {
                     System.err.println("[mini-code] 关闭终端失败: " + e.getMessage());
                 }
@@ -186,17 +187,19 @@ public class Main {
      * </p>
      */
     /**
-     * 构造 REPL 单轮结束触发的压缩钩子：用 lambda capture 闭包的形式拿到 history 与 workdir，
-     * 既不破坏现有 runReplTurn/runJLineRepl 签名，又避免 ThreadLocal 暗流。
+     * 构造 REPL 单轮结束触发的压缩钩子：经 {@link ReplContext} 读活引用（compactor/model/history），
+     * 使 /model 切换与 /new 新会话后，自动压缩仍指向当前模型与会话。
      */
-    private static Runnable buildTurnComplete(ContextCompactor compactor, LlmClient llm, Model model,
-                                             Path workdir, List<Message> history) {
-        if (compactor == null || llm == null || model == null) return null;
+    private static Runnable buildTurnComplete(ReplContext ctx) {
         return () -> {
+            ContextCompactor compactor = ctx.compactor();
+            if (compactor == null || ctx.llm() == null || ctx.model() == null) return;
+            List<Message> history = ctx.history();
+            if (history == null) return;
             try {
                 if (!compactor.shouldCompact(history)) return;
-                List<Message> kept = compactor.compact(history, llm, model,
-                        buildSystemPrompt(workdir), model.id());
+                List<Message> kept = compactor.compact(history, ctx.llm(), ctx.model(),
+                        ctx.systemPrompt(), ctx.model().id());
                 if (kept == history) return;
                 if (history instanceof SessionHistory sh) {
                     sh.replaceKeepingInMemory(kept);
@@ -387,7 +390,10 @@ public class Main {
             }
             int renderWidth = terminalWidth(terminal);
             int renderHeight = terminalHeight(terminal);
-            runReplTurn(line, history, loop, style, renderWidth, renderHeight);
+            // 活引用：/model、/new 后 ctx 内的 loop/history 可能已换入新实例
+            List<Message> activeHistory = ctx != null && ctx.history() != null ? ctx.history() : history;
+            AgentLoop activeLoop = ctx != null && ctx.currentLoop() != null ? ctx.currentLoop() : loop;
+            runReplTurn(line, activeHistory, activeLoop, style, renderWidth, renderHeight);
             if (onTurnComplete != null) onTurnComplete.run();
             try { reader.getHistory().save(); } catch (IOException ignored) {}
         }
@@ -485,7 +491,10 @@ public class Main {
                 }
             }
             // 降级输入也走流式路径，与 JLine 交互同款（SIGINT 由 loop 的 triggerSupplier 接管）
-            runReplTurn(line, history, loop, style, width, height);
+            // 活引用：/model、/new 后 ctx 内的 loop/history 可能已换入新实例
+            List<Message> activeHistory = ctx != null && ctx.history() != null ? ctx.history() : history;
+            AgentLoop activeLoop = ctx != null && ctx.currentLoop() != null ? ctx.currentLoop() : loop;
+            runReplTurn(line, activeHistory, activeLoop, style, width, height);
             if (onTurnComplete != null) onTurnComplete.run();
         }
     }
