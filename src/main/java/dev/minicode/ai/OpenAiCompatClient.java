@@ -123,10 +123,13 @@ public class OpenAiCompatClient implements LlmClient {
             m.content = List.of(Message.Content.text("[mini-code] 大模型请求失败 " + resp.statusCode() + ": " + truncate(resp.body(), 1500) + hint));
             m.stopReason = "error";
             m.errorMessage = resp.body();
+            m.modelId = model.id();
             return m;
         }
 
-        return parseResponse(resp.body());
+        Message parsed = parseResponse(resp.body());
+        parsed.modelId = model.id();
+        return parsed;
     }
 
     // ===== 流式扩展 =====
@@ -189,7 +192,7 @@ public class OpenAiCompatClient implements LlmClient {
      */
     private Message doStream(Model model, Context context, Consumer<String> onDelta, Supplier<Boolean> isCancelled) throws Exception {
         if (isCancelled.get() || Thread.currentThread().isInterrupted()) {
-            return buildStreamMessage(new StringBuilder(), new TreeMap<>(), null, true);
+            return buildStreamMessage(new StringBuilder(), new TreeMap<>(), null, true, null, null);
         }
 
         String apiKey = apiKeyOverride != null ? apiKeyOverride : resolveApiKey(model);
@@ -258,14 +261,14 @@ public class OpenAiCompatClient implements LlmClient {
             finished.set(true);
             monitor.interrupt();
             if (isCancelled.get() || Thread.currentThread().isInterrupted()) {
-                return buildStreamMessage(new StringBuilder(), new TreeMap<>(), null, true);
+                return buildStreamMessage(new StringBuilder(), new TreeMap<>(), null, true, null, null);
             }
             throw new IOException("流式建连已取消", ce);
         } catch (ExecutionException ee) {
             finished.set(true);
             monitor.interrupt();
             if (isCancelled.get() || Thread.currentThread().isInterrupted()) {
-                return buildStreamMessage(new StringBuilder(), new TreeMap<>(), null, true);
+                return buildStreamMessage(new StringBuilder(), new TreeMap<>(), null, true, null, null);
             }
             Throwable cause = ee.getCause();
             throw new IOException("流式建连失败: " + (cause != null ? cause.getMessage() : ee.getMessage()), cause != null ? cause : ee);
@@ -275,7 +278,7 @@ public class OpenAiCompatClient implements LlmClient {
             monitor.interrupt();
             future.cancel(true);
             if (isCancelled.get() || Thread.currentThread().isInterrupted()) {
-                return buildStreamMessage(new StringBuilder(), new TreeMap<>(), null, true);
+                return buildStreamMessage(new StringBuilder(), new TreeMap<>(), null, true, null, null);
             }
             throw ie;
         }
@@ -299,6 +302,7 @@ public class OpenAiCompatClient implements LlmClient {
         StringBuilder textAccum = new StringBuilder();
         Map<Integer, ToolAccum> toolMap = new TreeMap<>();
         String[] lastFinishHolder = new String[1];
+        Message.MessageUsage[] usageHolder = new Message.MessageUsage[1];
         List<String> eventLines = new ArrayList<>();
         boolean doneSeen = false;
 
@@ -332,7 +336,10 @@ public class OpenAiCompatClient implements LlmClient {
                     } catch (Exception parseEx) {
                         throw new IOException("SSE 解析异常", parseEx);
                     }
-                    boolean hasDoneMarkerInThisEvent = consumeOutputEvents(evs, onDelta, textAccum, toolMap, lastFinishHolder);
+                    // 顺带抓 usage（OpenAI-compat 末帧通常 {choices: [], usage:{...}}），覆盖 SseParser 默认忽略 usage 的策略
+                    Message.MessageUsage frameUsage = parseUsageFromFrame(eventLines);
+                    if (frameUsage != null) usageHolder[0] = frameUsage;
+                    boolean hasDoneMarkerInThisEvent = consumeOutputEvents(evs, onDelta, textAccum, toolMap, lastFinishHolder, usageHolder);
                     eventLines.clear();
                     if (hasDoneMarkerInThisEvent) {
                         doneSeen = true;
@@ -348,20 +355,22 @@ public class OpenAiCompatClient implements LlmClient {
                 for (String l : eventLines) if (l.startsWith("data:")) { hasData = true; break; }
                 if (hasData) {
                     List<SseParser.Event> evs = SseParser.parse(new ArrayList<>(eventLines));
-                    doneSeen = consumeOutputEvents(evs, onDelta, textAccum, toolMap, lastFinishHolder);
+                    Message.MessageUsage frameUsage = parseUsageFromFrame(eventLines);
+                    if (frameUsage != null) usageHolder[0] = frameUsage;
+                    doneSeen = consumeOutputEvents(evs, onDelta, textAccum, toolMap, lastFinishHolder, usageHolder);
                 }
                 eventLines.clear();
             }
             boolean cancelled = isCancelled.get() || Thread.currentThread().isInterrupted();
             finished.set(true);
             monitor.interrupt();
-            return buildStreamMessage(textAccum, toolMap, lastFinishHolder[0], cancelled);
+            return buildStreamMessage(textAccum, toolMap, lastFinishHolder[0], cancelled, usageHolder[0], model.id());
         } catch (IOException ioe) {
             finished.set(true);
             monitor.interrupt();
             boolean cancelled = isCancelled.get() || Thread.currentThread().isInterrupted();
             if (cancelled) {
-                return buildStreamMessage(textAccum, toolMap, lastFinishHolder[0], true);
+                return buildStreamMessage(textAccum, toolMap, lastFinishHolder[0], true, usageHolder[0], model.id());
             }
             throw ioe;
         } finally {
@@ -381,7 +390,7 @@ public class OpenAiCompatClient implements LlmClient {
      */
     private boolean consumeOutputEvents(List<SseParser.Event> evs, Consumer<String> onDelta,
                                         StringBuilder textAccum, Map<Integer, ToolAccum> toolMap,
-                                        String[] lastFinishHolder) {
+                                        String[] lastFinishHolder, Message.MessageUsage[] usageHolder) {
         boolean sawDoneMarker = false;
         for (SseParser.Event ev : evs) {
             if (ev instanceof SseParser.TextDelta td) {
@@ -418,7 +427,7 @@ public class OpenAiCompatClient implements LlmClient {
     /**
      * 根据累积的文本与工具调用拼装完整 Message，stopReason 对齐同步实现的归一化。
      */
-    private Message buildStreamMessage(StringBuilder textAccum, Map<Integer, ToolAccum> toolMap, String lastFinishReason, boolean cancelled) {
+    private Message buildStreamMessage(StringBuilder textAccum, Map<Integer, ToolAccum> toolMap, String lastFinishReason, boolean cancelled, Message.MessageUsage usage, String modelId) {
         List<Message.Content> contents = new ArrayList<>();
         String text = textAccum.toString();
         if (!text.isEmpty()) {
@@ -452,6 +461,8 @@ public class OpenAiCompatClient implements LlmClient {
         out.role = Message.Role.assistant;
         out.content = contents;
         out.stopReason = stopReason;
+        out.usage = usage;
+        out.modelId = modelId;
         return out;
     }
 
@@ -696,7 +707,36 @@ public class OpenAiCompatClient implements LlmClient {
         out.role = Message.Role.assistant;
         out.content = contents;
         out.stopReason = stopReason;
+        out.usage = parseUsage(root);
+        out.modelId = null; // parseResponse 处无 model 参数；chat 路径在 caller 中补
         return out;
+    }
+
+    /** 从 OpenAI-compat 响应根节点抓 usage 字段。容错：任一子字段缺失即整体不采。 */
+    static Message.MessageUsage parseUsage(JsonNode root) {
+        JsonNode usage = root.path("usage");
+        if (usage == null || usage.isMissingNode() || usage.isNull()) return null;
+        JsonNode p = usage.path("prompt_tokens");
+        JsonNode c = usage.path("completion_tokens");
+        JsonNode t = usage.path("total_tokens");
+        if (p.isMissingNode() || c.isMissingNode() || t.isMissingNode()) return null;
+        return new Message.MessageUsage(p.asInt(), c.asInt(), t.asInt());
+    }
+
+    /** 从 SSE 帧 eventLines 里抓 usage（拼一个合法 JSON 字符串后 parseUsage）。 */
+    private static Message.MessageUsage parseUsageFromFrame(List<String> eventLines) {
+        for (String l : eventLines) {
+            if (l == null || !l.startsWith("data:")) continue;
+            String payload = l.substring(5).trim();
+            if (payload.isEmpty() || "[DONE]".equals(payload)) continue;
+            try {
+                JsonNode root = MAPPER.readTree(payload);
+                Message.MessageUsage u = parseUsage(root);
+                if (u != null) return u;
+            } catch (Exception ignore) {
+            }
+        }
+        return null;
     }
 
     private String truncate(String s, int n) {

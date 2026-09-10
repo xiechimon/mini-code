@@ -4,6 +4,7 @@ import dev.minicode.agent.AgentEvent;
 import dev.minicode.agent.AgentLoop;
 import dev.minicode.agent.InterruptTrigger;
 import dev.minicode.ai.*;
+import dev.minicode.session.ContextCompactor;
 import dev.minicode.session.SessionHistory;
 import dev.minicode.session.SessionManager;
 import dev.minicode.tools.*;
@@ -131,6 +132,7 @@ public class Main {
             System.err.println("[mini-code] 会话初始化失败（降级为不持久化）: " + e.getMessage());
         }
         List<Message> history = session != null ? new SessionHistory(session) : new ArrayList<>();
+        ContextCompactor compactor = session != null ? new ContextCompactor(session) : null;
         // 区分管道 vs 交互式终端：System.console()==null 表示管道/重定向，此时一次性读完所有行后退出，避免 hasNextLine 阻塞
         if (System.console() == null) {
             // 管道模式：一次性读取 stdin 所有内容，按行处理；不启用流式与重绘，走同步路径，零流式事件
@@ -159,10 +161,11 @@ public class Main {
                 System.err.println("[mini-code] 终端初始化失败，回退到简单输入模式（方向键可能显示为 ^[[D）: " + e.getMessage());
             }
             if (terminal == null) {
-                runScannerRepl(history, loopRepl);
+                runScannerRepl(history, loopRepl, buildTurnComplete(compactor, llmRepl, modelRepl, workdir, history));
             } else {
                 try (Terminal t = terminal) {
-                    runJLineRepl(t, history, loopRepl);
+                    runJLineRepl(t, history, loopRepl, defaultHistoryPath(),
+                            buildTurnComplete(compactor, llmRepl, modelRepl, workdir, history));
                 } catch (IOException e) {
                     System.err.println("[mini-code] 关闭终端失败: " + e.getMessage());
                 }
@@ -176,6 +179,32 @@ public class Main {
      * 供 JLine FileHistory 持久化使用，路径可注入（测试用 @TempDir）。
      * </p>
      */
+    /**
+     * 构造 REPL 单轮结束触发的压缩钩子：用 lambda capture 闭包的形式拿到 history 与 workdir，
+     * 既不破坏现有 runReplTurn/runJLineRepl 签名，又避免 ThreadLocal 暗流。
+     */
+    private static Runnable buildTurnComplete(ContextCompactor compactor, LlmClient llm, Model model,
+                                             Path workdir, List<Message> history) {
+        if (compactor == null || llm == null || model == null) return null;
+        return () -> {
+            try {
+                if (!compactor.shouldCompact(history)) return;
+                List<Message> kept = compactor.compact(history, llm, model,
+                        buildSystemPrompt(workdir), model.id());
+                if (kept == history) return;
+                if (history instanceof SessionHistory sh) {
+                    sh.replaceKeepingInMemory(kept);
+                } else {
+                    history.clear();
+                    history.addAll(kept);
+                }
+                System.out.println("[mini-code] 已压缩上下文（保留段 " + kept.size() + " 条，完整会话存于 JSONL）");
+            } catch (Exception e) {
+                System.err.println("[mini-code] 压缩失败（已跳过）: " + e.getMessage());
+            }
+        };
+    }
+
     static Path defaultHistoryPath() {
         String home = System.getProperty("user.home");
         if (home == null || home.isEmpty()) {
@@ -269,26 +298,16 @@ public class Main {
      * </p>
      */
     static void runJLineRepl(Terminal terminal, List<Message> history, AgentLoop loop) throws Exception {
-        runJLineRepl(terminal, history, loop, defaultHistoryPath());
+        runJLineRepl(terminal, history, loop, defaultHistoryPath(), null);
     }
 
     /**
-     * JLine 交互循环（历史路径可注入，供测试用 @TempDir）。
-     * <p>
-     * 保持 JLine readLine 语义：Ctrl-C 抛 UserInterruptException（弃行）、Ctrl-D 抛 EndOfFileException（退出）。
-     * 行尾反斜杠与括号粘贴由 LineReader/Parser 天然处理，拼接为一次提交。
-     * </p>
-     *
-     * @param terminal    终端
-     * @param history     对话历史（AgentLoop 上下文）
-     * @param loop        Agent 循环
-     * @param historyPath 历史文件路径（测试可注入临时目录）
+     * JLine 交互循环（支持 turn-end 钩子，供压缩等使用）。
+     * <p>JLine 历史在首次 readLine 时 attach 并加载，此后增量落盘。</p>
      */
-    static void runJLineRepl(Terminal terminal, List<Message> history, AgentLoop loop, Path historyPath) throws Exception {
-        // 样式探测供提示符着色：复用 Style.detect，与事件渲染同源
+    static void runJLineRepl(Terminal terminal, List<Message> history, AgentLoop loop, Path historyPath,
+                             Runnable onTurnComplete) throws Exception {
         Style style = Style.detect(System.getenv(), true);
-        // 对 dumb 终端强制去色（TERM=dumb 场景），保持与事件渲染一致
-        // 若终端类型为 dumb，即使 env 未置 TERM，也应去色以免 ANSI 乱码
         if (terminal != null && "dumb".equals(terminal.getType())) {
             style = Style.PLAIN;
         } else if (terminal != null && "dumb-color".equals(terminal.getType())) {
@@ -296,20 +315,17 @@ public class Main {
         }
         String promptStr = prompt(style);
         LineReader reader = createReader(terminal, historyPath);
-        // JLine 历史在首次 readLine 时 attach 并加载，此后增量落盘
         while (true) {
             String line;
             try {
                 line = reader.readLine(promptStr);
             } catch (UserInterruptException e) {
-                continue; // Ctrl-C：放弃当前行，继续下一轮
+                continue;
             } catch (EndOfFileException e) {
                 System.out.println("[mini-code] 再见");
                 break;
             }
             if (line == null) break;
-            // 粘贴多行（dumb 兜底）：若 JLine 未处理括号粘贴标记（dumb 默认不绑定），此处手动剥离标记并拼接
-            // 正常 xterm 下 line 已为 "a\nb\nc" 且不含标记，此分支不触发
             if (line.contains("\u001B[200~")) {
                 line = handleBracketedPasteFallback(line, reader, promptStr);
                 if (line == null) continue;
@@ -323,11 +339,8 @@ public class Main {
             int renderWidth = terminalWidth(terminal);
             int renderHeight = terminalHeight(terminal);
             runReplTurn(line, history, loop, style, renderWidth, renderHeight);
-            // 增量历史已自动落盘，此处显式 save 兜底，确保 @TempDir 测试中文件可见
-            try {
-                reader.getHistory().save();
-            } catch (IOException ignored) {
-            }
+            if (onTurnComplete != null) onTurnComplete.run();
+            try { reader.getHistory().save(); } catch (IOException ignored) {}
         }
     }
 
@@ -382,6 +395,10 @@ public class Main {
      * 降级输入循环：终端初始化失败时使用，无行编辑能力（方向键显示为 ^[[D）。
      */
     static void runScannerRepl(List<Message> history, AgentLoop loop) throws Exception {
+        runScannerRepl(history, loop, null);
+    }
+
+    static void runScannerRepl(List<Message> history, AgentLoop loop, Runnable onTurnComplete) throws Exception {
         java.util.Scanner scanner = new java.util.Scanner(System.in, StandardCharsets.UTF_8);
         Style style = Style.detect(System.getenv(), true);
         String promptStr = prompt(style);
@@ -401,6 +418,7 @@ public class Main {
             }
             // 降级输入也走流式路径，与 JLine 交互同款（SIGINT 由 loop 的 triggerSupplier 接管）
             runReplTurn(line, history, loop, style, width, height);
+            if (onTurnComplete != null) onTurnComplete.run();
         }
     }
 

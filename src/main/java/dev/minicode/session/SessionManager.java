@@ -46,17 +46,18 @@ public final class SessionManager implements AutoCloseable {
         return m;
     }
 
-    /** 追加一条已完消息为 message 条目（以当前 leaf 为父，追加后推进 leaf）。 */
+    /** 追加一条已完消息为 message 条目（以当前 leaf 为父，追加后推进 leaf），
+     * 同时给 message.id 灌入本条短 id，让 firstKeptEntryId 能在 SessionContext.project 找回保留段。 */
     public void appendMessage(Message message) throws IOException {
         String id = newShortId();
+        if (message != null && message.id == null) message.id = id;
         store.append(SessionEntry.message(id, leafId, message));
         leafId = id;
     }
 
     /**
      * 追加一条 compaction 条目（以当前 leaf 为父，追加后推进 leaf）。
-     * 见 {@code docs/adr/0004}。{@code firstKeptEntryId} 本迭代置 null，对齐保留段以「压缩点后新增」读入式提取，
-     * 未来若需要 message-level id 字段（让保留段从头几倍增加仍现于上下文），需给 {@link Message} 加 id。
+     * 见 {@code docs/adr/0004}。
      */
     public void appendCompaction(String summary, String firstKeptEntryId, int tokensBefore) throws IOException {
         String id = newShortId();

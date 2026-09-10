@@ -45,6 +45,14 @@ public class ReadTool implements ToolDefinition {
         return "read";
     }
 
+    /**
+     * 只读：同回合中连续 READ_ONLY 段可并行执行（见 docs/adr/0005）。
+     */
+    @Override
+    public ToolKind kind() {
+        return ToolKind.READ_ONLY;
+    }
+
     @Override
     public String description() {
         return "读取文件内容。文本文件默认截断为 2000 行或 50KB（先到为准），可用 offset/limit 分页读取大文件。";
