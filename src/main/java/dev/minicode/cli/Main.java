@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /**
  * 命令行入口，对应 pi-coding-agent 的 cli（极简版）。
@@ -42,44 +43,6 @@ public class Main {
 
     /** 提示符字符 */
     private static final String PROMPT_CHAR = "❯";
-
-    /**
-     * SIGINT 触发器——将 Ctrl-C 映射为 AgentLoop 的取消信号。
-     * <p>
-     * 经 JLine 的公开 {@link org.jline.utils.Signals} 注册 SIGINT：JLine 内部封装 JVM 的 {@code sun.misc.Signal}——
-     * 二者同为「JDK 无可移植公共 SIGINT 捕获 API」时的事实标准（{@code Runtime.addShutdownHook} 会终止 JVM 且无法区分信号）。
-     * 本实现走 JLine 而非直连 {@code sun.misc}，避免引用内部 API 触发编译警告。
-     * 流式期间注册，触发器 {@code close()} 时恢复原处理器，保证结束后 Ctrl-C 恢复为 JLine 的弃行/退出语义。
-     * 受限或非 Unix 环境下捕获异常则降级为永不取消，不影响主流程。
-     * </p>
-     */
-    static class SigIntInterruptTrigger implements InterruptTrigger {
-        private volatile boolean cancelled = false;
-        private Object prev; // Signals.register 返回的恢复句柄
-
-        SigIntInterruptTrigger() {
-            try {
-                prev = Signals.register("INT", () -> cancelled = true);
-            } catch (Throwable ignore) {
-                prev = null;
-            }
-        }
-
-        @Override
-        public boolean isCancelled() {
-            return cancelled;
-        }
-
-        @Override
-        public void close() {
-            if (prev != null) {
-                try {
-                    Signals.unregister("INT", prev);
-                } catch (Throwable ignore) {
-                }
-            }
-        }
-    }
 
     public static void main(String[] args) throws Exception {
         // 帮助信息
@@ -123,8 +86,12 @@ public class Main {
         List<ToolDefinition> toolsRepl = List.of(new ReadTool(workdir), new WriteTool(workdir), new EditTool(workdir), new BashTool(workdir));
         // REPL 的流式触发器：交互终端可用时（Esc/Ctrl-C 中断），terminal 构建前先占位 AtomicReference，
         // 构建后再 set；supplier 在每回合 acquireTrigger 时才取值（懒求值），保证拿到的是当前终端。
+        // typeAheadSink：回合期间被吞掉的提前输入回吐口，由 runJLineRepl 在 createReader 之后 set 为
+        // reader::runMacro，让下一轮 readLine 把这些字符当作已键入处理。
         AtomicReference<Terminal> terminalRef = new AtomicReference<>();
-        java.util.function.Supplier<InterruptTrigger> replTriggerSupplier = () -> new TerminalInterruptTrigger(terminalRef.get());
+        AtomicReference<Consumer<String>> typeAheadSink = new AtomicReference<>();
+        java.util.function.Supplier<InterruptTrigger> replTriggerSupplier = () ->
+                new TerminalInterruptTrigger(terminalRef.get(), typeAheadSink.get());
         AgentLoop loopRepl = new AgentLoop(llmRepl, modelRepl, buildSystemPrompt(workdir), toolsRepl, 20, replTriggerSupplier);
         // 会话持久化：REPL 多轮 append-only 树；建会话失败则降级为纯内存 history（不中断 REPL）
         SessionManager session = null;
@@ -177,7 +144,7 @@ public class Main {
                 terminalRef.set(terminal); // 触发器 supplier 在每回合取值时拿到真实终端，Esc/Ctrl-C 都生效
                 try (Terminal t = terminal) {
                     runJLineRepl(t, history, loopRepl, defaultHistoryPath(),
-                            buildTurnComplete(replCtx), replCtx);
+                            buildTurnComplete(replCtx), replCtx, typeAheadSink);
                 } catch (IOException e) {
                     System.err.println("[mini-code] 关闭终端失败: " + e.getMessage());
                 }
@@ -338,12 +305,17 @@ public class Main {
      * </p>
      */
     static void runJLineRepl(Terminal terminal, List<Message> history, AgentLoop loop) throws Exception {
-        runJLineRepl(terminal, history, loop, defaultHistoryPath(), null, null);
+        runJLineRepl(terminal, history, loop, defaultHistoryPath(), null, null, null);
     }
 
     static void runJLineRepl(Terminal terminal, List<Message> history, AgentLoop loop, Path historyPath,
                              Runnable onTurnComplete) throws Exception {
-        runJLineRepl(terminal, history, loop, historyPath, onTurnComplete, null);
+        runJLineRepl(terminal, history, loop, historyPath, onTurnComplete, null, null);
+    }
+
+    static void runJLineRepl(Terminal terminal, List<Message> history, AgentLoop loop, Path historyPath,
+                             Runnable onTurnComplete, ReplContext ctx) throws Exception {
+        runJLineRepl(terminal, history, loop, historyPath, onTurnComplete, ctx, null);
     }
 
     /**
@@ -355,7 +327,8 @@ public class Main {
      * @param ctx REPL 会话上下文；null 表示不启用斜杠命令
      */
     static void runJLineRepl(Terminal terminal, List<Message> history, AgentLoop loop, Path historyPath,
-                             Runnable onTurnComplete, ReplContext ctx) throws Exception {
+                             Runnable onTurnComplete, ReplContext ctx,
+                             AtomicReference<Consumer<String>> typeAheadSink) throws Exception {
         Style style = Style.detect(System.getenv(), true);
         if (terminal != null && "dumb".equals(terminal.getType())) {
             style = Style.PLAIN;
@@ -365,6 +338,10 @@ public class Main {
         String promptStr = prompt(style);
         LineReader reader = createReader(terminal, historyPath,
                 SlashCommands.commandCompleter(ctx != null ? ctx.dispatcher() : null));
+        // type-ahead 回吐口：reader 创建后再 set，确保 supplier 懒取值时拿到真实 reader
+        if (typeAheadSink != null) {
+            typeAheadSink.set(reader::runMacro);
+        }
         while (true) {
             String line;
             try {

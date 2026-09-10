@@ -39,7 +39,7 @@ class TerminalInterruptTriggerTest {
     @Test
     void bareEscCancels() throws Exception {
         try (Terminal term = terminal(new byte[]{0x1B})) {
-            TerminalInterruptTrigger t = new TerminalInterruptTrigger(term);
+            TerminalInterruptTrigger t = new TerminalInterruptTrigger(term, null);
             try {
                 awaitCancelled(t, true, 2000);
             } finally {
@@ -52,7 +52,7 @@ class TerminalInterruptTriggerTest {
     void arrowKeyEscapeSequenceDoesNotCancel() throws Exception {
         // ESC [ D（左方向键）：其后紧跟字节，应整段吞掉而非中断
         try (Terminal term = terminal(new byte[]{0x1B, '[', 'D'})) {
-            TerminalInterruptTrigger t = new TerminalInterruptTrigger(term);
+            TerminalInterruptTrigger t = new TerminalInterruptTrigger(term, null);
             try {
                 // 给观察线程足够时间处理完整序列；结束后仍不应取消
                 Thread.sleep(400);
@@ -66,7 +66,7 @@ class TerminalInterruptTriggerTest {
     @Test
     void plainCharsDoNotCancel() throws Exception {
         try (Terminal term = terminal("hello\n".getBytes(StandardCharsets.UTF_8))) {
-            TerminalInterruptTrigger t = new TerminalInterruptTrigger(term);
+            TerminalInterruptTrigger t = new TerminalInterruptTrigger(term, null);
             try {
                 Thread.sleep(300);
                 assertFalse(t.isCancelled(), "普通输入不应触发中断");
@@ -80,7 +80,7 @@ class TerminalInterruptTriggerTest {
     void closeIsIdempotentAndRestoresAttributes() throws Exception {
         try (Terminal term = terminal(new byte[]{0x1B})) {
             Attributes before = new Attributes(term.getAttributes());
-            TerminalInterruptTrigger t = new TerminalInterruptTrigger(term);
+            TerminalInterruptTrigger t = new TerminalInterruptTrigger(term, null);
             awaitCancelled(t, true, 2000);
             assertDoesNotThrow(t::close);
             assertDoesNotThrow(t::close); // 幂等
@@ -93,10 +93,31 @@ class TerminalInterruptTriggerTest {
 
     @Test
     void nullTerminalDegradesToSigintOnly() {
-        TerminalInterruptTrigger t = new TerminalInterruptTrigger(null);
+        TerminalInterruptTrigger t = new TerminalInterruptTrigger(null, null);
         assertFalse(t.isCancelled());
         assertDoesNotThrow(t::close);
         assertDoesNotThrow(t::close);
         assertFalse(t.isCancelled());
+    }
+
+    /**
+     * type-ahead 回吐：回合期间被吞掉的可打印字节在 close() 时经 sink 一次性交付，
+     * 模拟 LineReader.runMacro 的回灌语义，确保流式期间的提前输入不丢。
+     */
+    @Test
+    void typeAheadIsDeliveredToSinkOnClose() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<String> sinkRef = new java.util.concurrent.atomic.AtomicReference<>();
+        try (Terminal term = terminal("hello".getBytes(StandardCharsets.UTF_8))) {
+            TerminalInterruptTrigger t = new TerminalInterruptTrigger(term, sinkRef::set);
+            try {
+                // 等观察线程读完 'h','e','l','l','o'（pump EOF 后 read 返 EOF → break）
+                Thread.sleep(300);
+                assertFalse(t.isCancelled());
+                assertNull(sinkRef.get(), "close 前 sink 不应被调用");
+            } finally {
+                t.close();
+            }
+            assertEquals("hello", sinkRef.get());
+        }
     }
 }

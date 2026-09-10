@@ -62,7 +62,7 @@ class MainStreamingTest {
     @Test
     void sigIntTriggerLifecycle() throws Exception {
         // 受限环境（非 Unix）可能降级为永不取消：验证 close 不抛且可重复
-        Main.SigIntInterruptTrigger t = new Main.SigIntInterruptTrigger();
+        SigIntInterruptTrigger t = new SigIntInterruptTrigger();
         assertFalse(t.isCancelled());
         assertDoesNotThrow(t::close);
         assertFalse(t.isCancelled());
