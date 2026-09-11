@@ -119,14 +119,15 @@ class SlashCommandPanelTest {
             assertTrue(screen.contains("/help"), "输 / 后应渲染面板，实际输出长度=" + screen.length());
             assertFalse(screen.contains("(退出 REPL)"), "面板打开时内建建议列表不得同屏");
 
-            // ② 面板开着时 Tab = 面板内下移（不弹内建列表）
+            // ② 面板开着时 Tab = 上屏（选中项填入输入行、面板关闭，不弹内建列表）
             int beforeTab = termOut.toString(StandardCharsets.UTF_8).length(); // 按字符数（CJK 多字节，size() 是字节数会错位）
             keys.write("\t".getBytes(StandardCharsets.UTF_8));
             keys.flush();
             Thread.sleep(400);
             String afterTab = termOut.toString(StandardCharsets.UTF_8).substring(beforeTab);
             assertFalse(afterTab.contains("(退出 REPL)"), "面板打开时 Tab 不得弹内建补全列表");
-            assertEquals(1, panel.model().selectedIndex(), "Tab 应在面板内下移高亮");
+            assertEquals("/help", reader.getBuffer().toString(), "Tab 应把选中项上屏到输入行");
+            assertFalse(panel.model().isOpen(), "上屏后面板应关闭");
 
             // ③ 两轮 开→Esc 关→Ctrl-U 清行→再开：固定高度下滚动区不得重算
             // （基准取在首个面板稳定渲染后：enable 预占与 readLine 启动各有一次合法变更）

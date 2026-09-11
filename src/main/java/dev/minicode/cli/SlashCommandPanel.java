@@ -39,7 +39,7 @@ public final class SlashCommandPanel extends Widgets {
     /** 关闭态底栏提示（兼作发现入口）。 */
     static final String HINT_CLOSED = "输 / 打开命令面板";
     /** 打开态底栏提示（键位说明）。 */
-    static final String HINT_OPEN = "↑↓ 选择 · Enter 选中 · Esc 取消";
+    static final String HINT_OPEN = "↑↓ 选择 · Tab 上屏 · Enter 执行 · Esc 取消";
 
     private final PanelModel model;
     /** 面板区固定行数 = 全部候选 + 1 行底栏提示。 */
@@ -85,7 +85,7 @@ public final class SlashCommandPanel extends Widgets {
         aliasWidget("_panel-accept-line", LineReader.ACCEPT_LINE);
         aliasWidget("_panel-up", LineReader.UP_LINE_OR_SEARCH);
         aliasWidget("_panel-down", LineReader.DOWN_LINE_OR_SEARCH);
-        // 面板开着时 Tab = 下移（不弹内建补全列表，避免与面板双显）；关闭时透传内建 Tab 补全
+        // 面板开着时 Tab = 上屏选中项（不弹内建补全列表，避免双显）；关闭时透传内建 Tab 补全
         aliasWidget("_panel-expand-or-complete", LineReader.EXPAND_OR_COMPLETE);
         getKeyMap().bind(new Reference("_panel-esc"), "\u001b");
         prevAmbiguous = reader.getVariable(LineReader.AMBIGUOUS_BINDING);
@@ -193,12 +193,17 @@ public final class SlashCommandPanel extends Widgets {
     }
 
     private boolean panelTab() {
-        if (model.isOpen()) {
-            model.move(1);
-            render();
-            return true;
+        Optional<PanelModel.Selection> sel = model.select();
+        if (sel.isEmpty()) {
+            // 面板未开：透传内建 Tab 补全
+            return callBuiltin(LineReader.EXPAND_OR_COMPLETE);
         }
-        return callBuiltin(LineReader.EXPAND_OR_COMPLETE);
+        // Tab = 上屏（pi 语义：确认即填充，不执行）：选中命令填入输入行，面板关闭
+        buffer().clear();
+        buffer().write(sel.get().command());
+        model.close();
+        render();
+        return true;
     }
 
     private boolean panelEsc() {
