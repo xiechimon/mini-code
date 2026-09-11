@@ -40,11 +40,15 @@ src/main/java/dev/minicode/
 ## 编码规范
 
 - Java 17，Maven 约束不变，新增依赖需说明理由，优先用 JDK/Jackson/SLF4J 已有能力
-- 中文注释，类头说明对齐的 pi 源文件路径
+- 中文注释，类头 Javadoc 第一段必须包含 `对齐 \`pi/<package>/<file>\`：<一句话职责>`，缺它即 review 不通过
 - `edit` 用精确替换（`oldText` 唯一且最小），多处改动合并为一次 `edit` 调用；`write` 仅用于新文件或全量重写
 - 日志用 `slf4j`，工具执行失败 `log.warn` 并返回 `isError=true` 的 `ToolResult`，不让循环崩溃
-- 包内聚：`ai` 不依赖 `agent/tools`，`agent` 依赖 `ai+tools`，`cli` 组装所有
+- 包内聚：`ai` 不依赖 `agent/tools`，`agent` 依赖 `ai+tools`，`cli` 组装所有；新类优先顶级，禁嵌套进已有类（历史兼容除外）
 - 避免 `curl/WebSearch` 直连外网，公开内容检索走 `agent-reach`（`agent-reach doctor --json` 查可用渠道）
+
+## 关键链路指针
+
+- **回合取消机制（InterruptTrigger）**：契约在 `dev.minicode.agent.InterruptTrigger` 接口 Javadoc；生命周期 `AgentLoop.acquireTrigger` / `closeQuietly` 每回合一取一放；CLI 实现 `dev.minicode.cli.{SigInt,Terminal}InterruptTrigger`。改这条链前先看这三处，缺一会写出双重注册或 chain leak。
 
 ## 测试要求
 
