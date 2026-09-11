@@ -280,7 +280,7 @@ public class Main {
             reader.setAutosuggestion(LineReader.SuggestionType.COMPLETER);
         }
         // —— 护栏：为何反射 ——
-        // 背景：JLine 3.27.1 在 dumb/ExternalTerminal 下默认 keyMap 为 "dumb"，未绑定 BRACKETED_PASTE 的 begin 序列 "\u001B[200~"；
+        // 背景：JLine（3.30.9 复核仍需此补丁）在 dumb/ExternalTerminal 下默认 keyMap 为 "dumb"，未绑定 BRACKETED_PASTE 的 begin 序列 "\u001B[200~"；
         //       导致多行粘贴（bracketed paste）被拆成多次 readLine 提交，回退到逐行历史。
         // 做法：通过反射取 LineReaderImpl.keyMaps 中的 "dumb" KeyMap，手动补绑定 "\u001B[200~" → "begin-paste"；
         //       与 JLine 对 xterm/emacs 的 bindArrowKeys 逻辑保持一致，使 dumb 下粘贴也能整体进缓冲一次提交。
