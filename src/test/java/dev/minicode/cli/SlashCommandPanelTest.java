@@ -83,14 +83,15 @@ class SlashCommandPanelTest {
     }
 
     /**
-     * 击键级回归（用户症状：输 / 面板不出现）：xterm 能力的 ExternalTerminal + 管道输入，
-     * 驱动真实 readLine 循环，断言终端输出含面板内容；随后回车验证无参命令选中即执行
-     * （面板 Enter 分流把行替换为 /help 提交）。
+     * 击键级回归（用户两个症状：双显 + 漂移）：xterm 能力的 ExternalTerminal + 管道输入驱动真实 readLine。
+     * ① 输 / 面板渲染（含 /help）且内建列表（括号描述签名）不同屏；② 面板开着时 Tab = 面板内下移；
+     * ③ 固定高度：多轮开闭后滚动区序列至多出现一次（初始预占）——变高即漂移的回归锁；
+     * ④ 无参命令 Enter 选中即执行。
      */
     @Test
-    void panelRendersOnSlashKeystroke() throws Exception {
+    void panelRendersFiltersAndNeverDrifts() throws Exception {
         java.io.PipedInputStream termIn = new java.io.PipedInputStream();
-        java.io.PipedOutputStream keystrokes = new java.io.PipedOutputStream(termIn);
+        java.io.PipedOutputStream keys = new java.io.PipedOutputStream(termIn);
         ByteArrayOutputStream termOut = new ByteArrayOutputStream();
         try (Terminal t = new ExternalTerminal("panel-it", "xterm", termIn, termOut, StandardCharsets.UTF_8)) {
             t.setSize(new org.jline.terminal.Size(120, 30));
@@ -109,26 +110,71 @@ class SlashCommandPanelTest {
             });
             th.setDaemon(true);
             th.start();
-            Thread.sleep(300); // 等 readLine 就绪
+            Thread.sleep(300);
 
-            keystrokes.write("/".getBytes(StandardCharsets.UTF_8));
-            keystrokes.flush();
-            // 轮询等待面板渲染（最长 2s）
-            String screen = "";
-            long deadline = System.currentTimeMillis() + 2000;
-            while (System.currentTimeMillis() < deadline) {
-                screen = termOut.toString(StandardCharsets.UTF_8);
-                if (screen.contains("/help")) break;
-                Thread.sleep(50);
+            // ① 输 /：面板打开（含 /help），内建列表不得同屏
+            keys.write("/".getBytes(StandardCharsets.UTF_8));
+            keys.flush();
+            String screen = pollUntil(termOut, "/help", 2000);
+            assertTrue(screen.contains("/help"), "输 / 后应渲染面板，实际输出长度=" + screen.length());
+            assertFalse(screen.contains("(退出 REPL)"), "面板打开时内建建议列表不得同屏");
+
+            // ② 面板开着时 Tab = 面板内下移（不弹内建列表）
+            int beforeTab = termOut.toString(StandardCharsets.UTF_8).length(); // 按字符数（CJK 多字节，size() 是字节数会错位）
+            keys.write("\t".getBytes(StandardCharsets.UTF_8));
+            keys.flush();
+            Thread.sleep(400);
+            String afterTab = termOut.toString(StandardCharsets.UTF_8).substring(beforeTab);
+            assertFalse(afterTab.contains("(退出 REPL)"), "面板打开时 Tab 不得弹内建补全列表");
+            assertEquals(1, panel.model().selectedIndex(), "Tab 应在面板内下移高亮");
+
+            // ③ 两轮 开→Esc 关→Ctrl-U 清行→再开：固定高度下滚动区不得重算
+            // （基准取在首个面板稳定渲染后：enable 预占与 readLine 启动各有一次合法变更）
+            int beforeCycles = termOut.toString(StandardCharsets.UTF_8).length();
+            for (int i = 0; i < 2; i++) {
+                keys.write(0x1B);
+                keys.flush();
+                Thread.sleep(400);
+                keys.write(0x15);
+                keys.flush();
+                Thread.sleep(200);
+                keys.write("/".getBytes(StandardCharsets.UTF_8));
+                keys.flush();
+                Thread.sleep(300);
             }
-            assertTrue(screen.contains("/help"), "输 / 后终端输出应含面板候选（状态栏渲染），实际输出长度=" + screen.length());
+            keys.write(0x1B);
+            keys.flush();
+            Thread.sleep(300);
 
-            keystrokes.write("\r".getBytes(StandardCharsets.UTF_8));
-            keystrokes.flush();
+            String cyclesOut = termOut.toString(StandardCharsets.UTF_8).substring(beforeCycles);
+            long regionChanges = java.util.regex.Pattern.compile("\u001b" + "\\[\\d+;\\d+r").matcher(cyclesOut).results().count();
+            assertEquals(0, regionChanges,
+                    "面板开闭循环期间不得重算滚动区（每次重算=内容上推一段，漂移根源）");
+
+            // ④ Enter 选中无参命令（/help）直接执行
+            keys.write(0x15);
+            keys.write("/".getBytes(StandardCharsets.UTF_8));
+            keys.flush();
+            Thread.sleep(300);
+            keys.write("\r".getBytes(StandardCharsets.UTF_8));
+            keys.flush();
             th.join(3000);
             assertNull(err.get(), err.get() == null ? "" : err.get().toString());
             assertEquals("/help", line.get(), "无参命令选中应填入并直接执行");
             panel.disable();
         }
+    }
+
+    private static String pollUntil(ByteArrayOutputStream out, String marker, long timeoutMs) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        String s = "";
+        while (System.currentTimeMillis() < deadline) {
+            s = out.toString(StandardCharsets.UTF_8);
+            if (s.contains(marker)) {
+                return s;
+            }
+            Thread.sleep(50);
+        }
+        return s;
     }
 }

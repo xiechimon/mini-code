@@ -1,7 +1,5 @@
 package dev.minicode.cli;
 
-import org.jline.keymap.KeyMap;
-import org.jline.reader.Binding;
 import org.jline.reader.LineReader;
 import org.jline.reader.Reference;
 import org.jline.utils.AttributedString;
@@ -20,20 +18,32 @@ import java.util.Optional;
  * <p>
  * 机制全走 JLine 公开 API（TailTipWidgets 先例）：{@code addWidget} 注册 {@code _panel-*} 变体、
  * {@code aliasWidget} 让内建名指向变体（壳内用 {@code "."} 前缀回调真内建）、渲染走
- * {@link Status}（屏幕底部锚定；不支持的终端 Status 返回 null 或无操作，面板自动不出现 = 降级即现状）。
+ * {@link Status}（屏幕底部锚定；不支持的终端 Status 无操作，面板自动不出现 = 降级即现状）。
  * </p>
  * <p>
- * Esc 离散化：emacs 键表里裸 ESC 原本只是转义序列前缀，这里把它绑成面板取消键；
- * {@code AMBIGUOUS_BINDING} 消歧超时从默认 1000ms 调至 100ms——方向键等转义序列整帧到达，
- * 延迟不可感知；仅裸按 Esc 时多等 100ms 关面板（取舍见 docs/adr/0008）。
+ * 两个关键取舍（docs/adr/0008）：
  * </p>
+ * <ul>
+ * <li><b>固定高度</b>：面板区恒定 候选数+1 行（底栏提示），开闭只换内容不换高度。
+ *     Status 的滚动区只在行数变化时重算且「增长上滚不回缩」（JLine Status.update 源码），
+ *     变高即漂移——这是「每输一次 / 内容离底部越来越远」的修复点。</li>
+ * <li><b>Esc 离散化</b>：emacs 键表里裸 ESC 原本只是转义序列前缀，这里绑成面板取消键；
+ *     {@code AMBIGUOUS_BINDING} 消歧超时调至 100ms——方向键等转义序列整帧到达，延迟不可感知。</li>
+ * </ul>
  */
 public final class SlashCommandPanel extends Widgets {
 
     /** Esc 消歧超时（ms）：裸 Esc 关面板的等待上限，也是方向键转义序列的最长等待。 */
     static final long ESC_AMBIGUOUS_MS = 100L;
 
+    /** 关闭态底栏提示（兼作发现入口）。 */
+    static final String HINT_CLOSED = "输 / 打开命令面板";
+    /** 打开态底栏提示（键位说明）。 */
+    static final String HINT_OPEN = "↑↓ 选择 · Enter 选中 · Esc 取消";
+
     private final PanelModel model;
+    /** 面板区固定行数 = 全部候选 + 1 行底栏提示。 */
+    private final int reservedRows;
     private Status status;
     private boolean enabled;
     private Object prevAmbiguous;
@@ -41,13 +51,16 @@ public final class SlashCommandPanel extends Widgets {
 
     public SlashCommandPanel(LineReader reader, SlashDispatcher dispatcher) {
         super(reader);
-        this.model = new PanelModel(buildItems(dispatcher));
+        List<PanelModel.Item> items = buildItems(dispatcher);
+        this.model = new PanelModel(items);
+        this.reservedRows = items.size() + 1;
         addWidget("_panel-self-insert", this::panelSelfInsert);
         addWidget("_panel-delete-char", this::panelDeleteChar);
         addWidget("_panel-backward-delete-char", this::panelBackwardDelete);
         addWidget("_panel-accept-line", this::panelAcceptLine);
         addWidget("_panel-up", this::panelUp);
         addWidget("_panel-down", this::panelDown);
+        addWidget("_panel-expand-or-complete", this::panelTab);
         addWidget("_panel-esc", this::panelEsc);
     }
 
@@ -61,7 +74,7 @@ public final class SlashCommandPanel extends Widgets {
         return items;
     }
 
-    /** 启用面板：别名接管按键 + 绑裸 Esc + 抑制内建建议列表（面板取代它）。 */
+    /** 启用面板：别名接管按键 + 绑裸 Esc + 抑制内建建议列表 + 预占固定高度的状态栏区域。 */
     public void enable() {
         if (enabled) {
             return;
@@ -72,15 +85,18 @@ public final class SlashCommandPanel extends Widgets {
         aliasWidget("_panel-accept-line", LineReader.ACCEPT_LINE);
         aliasWidget("_panel-up", LineReader.UP_LINE_OR_SEARCH);
         aliasWidget("_panel-down", LineReader.DOWN_LINE_OR_SEARCH);
+        // 面板开着时 Tab = 下移（不弹内建补全列表，避免与面板双显）；关闭时透传内建 Tab 补全
+        aliasWidget("_panel-expand-or-complete", LineReader.EXPAND_OR_COMPLETE);
         getKeyMap().bind(new Reference("_panel-esc"), "\u001b");
         prevAmbiguous = reader.getVariable(LineReader.AMBIGUOUS_BINDING);
         reader.setVariable(LineReader.AMBIGUOUS_BINDING, ESC_AMBIGUOUS_MS);
         prevSuggestion = reader.getAutosuggestion();
         reader.setAutosuggestion(LineReader.SuggestionType.NONE);
         enabled = true;
+        render(); // 预占固定高度区域（关闭态内容），此后滚动区不再变化
     }
 
-    /** 停用：键表别名全部还原、Esc 解绑、恢复消歧超时与建议列表设置。 */
+    /** 停用：键表别名全部还原、Esc 解绑、恢复消歧超时与建议列表设置、释放状态栏区域。 */
     public void disable() {
         if (!enabled) {
             return;
@@ -91,11 +107,15 @@ public final class SlashCommandPanel extends Widgets {
         aliasWidget("." + LineReader.ACCEPT_LINE, LineReader.ACCEPT_LINE);
         aliasWidget("." + LineReader.UP_LINE_OR_SEARCH, LineReader.UP_LINE_OR_SEARCH);
         aliasWidget("." + LineReader.DOWN_LINE_OR_SEARCH, LineReader.DOWN_LINE_OR_SEARCH);
+        aliasWidget("." + LineReader.EXPAND_OR_COMPLETE, LineReader.EXPAND_OR_COMPLETE);
         getKeyMap().unbind("\u001b");
         // prevAmbiguous 为 null（原本未设）时 setVariable(name, null) 等价还原（getVariable 读回 null）
         reader.setVariable(LineReader.AMBIGUOUS_BINDING, prevAmbiguous);
         reader.setAutosuggestion(prevSuggestion);
-        hidePanel();
+        Status s = status();
+        if (s != null) {
+            s.hide();
+        }
         enabled = false;
     }
 
@@ -143,12 +163,14 @@ public final class SlashCommandPanel extends Widgets {
         if (s.execute()) {
             // 无参命令：填入并直接提交，REPL 循环接管 dispatch
             buffer().write(s.command());
-            closePanel();
+            model.close();
+            render();
             return callBuiltin(LineReader.ACCEPT_LINE);
         }
         // 带参命令：填入 + 空格，面板关闭，留在编辑态等参数
         buffer().write(s.command() + " ");
-        closePanel();
+        model.close();
+        render();
         return true;
     }
 
@@ -170,22 +192,27 @@ public final class SlashCommandPanel extends Widgets {
         return callBuiltin(LineReader.DOWN_LINE_OR_SEARCH);
     }
 
+    private boolean panelTab() {
+        if (model.isOpen()) {
+            model.move(1);
+            render();
+            return true;
+        }
+        return callBuiltin(LineReader.EXPAND_OR_COMPLETE);
+    }
+
     private boolean panelEsc() {
         // 只关面板，输入行保留；面板未开时为空操作（裸 Esc 的 Emacs 原语义即如此）
-        closePanel();
+        model.close();
+        render();
         return true;
     }
 
-    // ===== 状态同步与渲染 =====
+    // ===== 状态同步与渲染（固定高度：开闭只换内容，不换行数） =====
 
     private void refresh() {
         model.onBufferChanged(buffer().toString());
         render();
-    }
-
-    private void closePanel() {
-        model.close();
-        hidePanel();
     }
 
     private Status status() {
@@ -197,41 +224,45 @@ public final class SlashCommandPanel extends Widgets {
         return status;
     }
 
-    private void hidePanel() {
-        Status s = status();
-        if (s != null) {
-            s.hide();
-        }
-    }
-
     private void render() {
         if (!enabled) {
-            return;
-        }
-        if (!model.isOpen()) {
-            hidePanel();
             return;
         }
         Status s = status();
         if (s == null) {
             return; // 终端不支持状态栏：静默无面板（降级即现状）
         }
-        List<PanelModel.Item> items = model.filtered();
-        int nameWidth = items.stream().mapToInt(it -> it.command().length()).max().orElse(0);
-        List<AttributedString> lines = new ArrayList<>(items.size());
-        for (int i = 0; i < items.size(); i++) {
-            PanelModel.Item it = items.get(i);
-            AttributedStringBuilder b = new AttributedStringBuilder();
-            if (i == model.selectedIndex()) {
-                b.style(AttributedStyle.DEFAULT.inverse());
-                b.append("▶ ").append(padRight(it.command(), nameWidth)).append("  ").append(it.description());
-            } else {
-                b.append("  ").append(padRight(it.command(), nameWidth)).append("  ");
-                b.style(AttributedStyle.DEFAULT.faint());
-                b.append(it.description());
-            }
-            lines.add(b.toAttributedString());
+        int termRows = reader.getTerminal().getHeight();
+        if (termRows > 0 && termRows < reservedRows + 3) {
+            return; // 终端太矮：不渲染（避免滚动区为负）
         }
+        List<AttributedString> lines = new ArrayList<>(reservedRows);
+        if (model.isOpen()) {
+            List<PanelModel.Item> items = model.filtered();
+            int nameWidth = items.stream().mapToInt(it -> it.command().length()).max().orElse(0);
+            for (int i = 0; i < items.size(); i++) {
+                PanelModel.Item it = items.get(i);
+                AttributedStringBuilder b = new AttributedStringBuilder();
+                if (i == model.selectedIndex()) {
+                    b.style(AttributedStyle.DEFAULT.inverse());
+                    b.append("▶ ").append(padRight(it.command(), nameWidth)).append("  ").append(it.description());
+                } else {
+                    b.append("  ").append(padRight(it.command(), nameWidth)).append("  ");
+                    b.style(AttributedStyle.DEFAULT.faint());
+                    b.append(it.description());
+                }
+                lines.add(b.toAttributedString());
+            }
+        }
+        // 固定高度：不足行数用空行补齐（内容贴底部，靠近输入行），最后一行恒为底栏提示
+        AttributedString footer = new AttributedStringBuilder()
+                .style(AttributedStyle.DEFAULT.faint())
+                .append(model.isOpen() ? HINT_OPEN : HINT_CLOSED)
+                .toAttributedString();
+        while (lines.size() < reservedRows - 1) {
+            lines.add(0, new AttributedString(""));
+        }
+        lines.add(footer);
         s.update(lines);
     }
 
