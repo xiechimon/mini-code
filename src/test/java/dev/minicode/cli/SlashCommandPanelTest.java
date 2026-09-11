@@ -81,4 +81,54 @@ class SlashCommandPanelTest {
         assertFalse(panel.isEnabled());
         reader.getTerminal().close();
     }
+
+    /**
+     * 击键级回归（用户症状：输 / 面板不出现）：xterm 能力的 ExternalTerminal + 管道输入，
+     * 驱动真实 readLine 循环，断言终端输出含面板内容；随后回车验证无参命令选中即执行
+     * （面板 Enter 分流把行替换为 /help 提交）。
+     */
+    @Test
+    void panelRendersOnSlashKeystroke() throws Exception {
+        java.io.PipedInputStream termIn = new java.io.PipedInputStream();
+        java.io.PipedOutputStream keystrokes = new java.io.PipedOutputStream(termIn);
+        ByteArrayOutputStream termOut = new ByteArrayOutputStream();
+        try (Terminal t = new ExternalTerminal("panel-it", "xterm", termIn, termOut, StandardCharsets.UTF_8)) {
+            t.setSize(new org.jline.terminal.Size(120, 30));
+            LineReader reader = Main.createReader(t, tmp.resolve("h2"), SlashCommands.commandCompleter(null));
+            SlashCommandPanel panel = new SlashCommandPanel(reader, null);
+            panel.enable();
+
+            java.util.concurrent.atomic.AtomicReference<String> line = new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<Throwable> err = new java.util.concurrent.atomic.AtomicReference<>();
+            Thread th = new Thread(() -> {
+                try {
+                    line.set(reader.readLine("❯ "));
+                } catch (Throwable e) {
+                    err.set(e);
+                }
+            });
+            th.setDaemon(true);
+            th.start();
+            Thread.sleep(300); // 等 readLine 就绪
+
+            keystrokes.write("/".getBytes(StandardCharsets.UTF_8));
+            keystrokes.flush();
+            // 轮询等待面板渲染（最长 2s）
+            String screen = "";
+            long deadline = System.currentTimeMillis() + 2000;
+            while (System.currentTimeMillis() < deadline) {
+                screen = termOut.toString(StandardCharsets.UTF_8);
+                if (screen.contains("/help")) break;
+                Thread.sleep(50);
+            }
+            assertTrue(screen.contains("/help"), "输 / 后终端输出应含面板候选（状态栏渲染），实际输出长度=" + screen.length());
+
+            keystrokes.write("\r".getBytes(StandardCharsets.UTF_8));
+            keystrokes.flush();
+            th.join(3000);
+            assertNull(err.get(), err.get() == null ? "" : err.get().toString());
+            assertEquals("/help", line.get(), "无参命令选中应填入并直接执行");
+            panel.disable();
+        }
+    }
 }

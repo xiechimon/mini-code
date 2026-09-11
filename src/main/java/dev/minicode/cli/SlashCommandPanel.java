@@ -190,7 +190,9 @@ public final class SlashCommandPanel extends Widgets {
 
     private Status status() {
         if (status == null) {
-            status = Status.getStatus(reader.getTerminal(), false);
+            // create=true：面板是状态栏的唯一使用者，没人会先行创建；
+            // create=false 会永远拿到 null 导致面板静默不渲染（回归锁：panelRendersOnSlashKeystroke）
+            status = Status.getStatus(reader.getTerminal(), true);
         }
         return status;
     }
