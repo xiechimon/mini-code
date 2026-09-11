@@ -4,7 +4,7 @@
 
 **Blocked by:** 01(JLine 升级 3.30.9 + 注册表 takesArg 标记)—— 面板依赖 3.30.9 的 clearChoices 修复与 takesArg 分流标记
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] `PanelModel` 纯状态机(零 JLine 依赖):open(首 token 以 / 开头)/filter/move(环绕)/select(按 takesArg 分流)/dismiss(Esc、删光 /、无匹配);候选与命令注册表同源
 - [ ] `SlashCommandPanel` widget 壳:继承 Widgets,启用时按 TailTipWidgets 先例别名接管 MAIN 键表(self-insert/backward-delete-char/accept-line/方向键/Esc),渲染走 Status(底部状态栏,高亮反白);面板打开期间 setSuggestionType(NONE) 抑制内建建议列表,关闭恢复 COMPLETER;disable 时键表全部还原

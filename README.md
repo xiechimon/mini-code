@@ -17,6 +17,8 @@
 - **MVP3 流式 + 会话** — SSE 流式渲染（Markdown/ANSI）、append-only JSONL 会话持久化、token 估算驱动的 Context 压缩（ADR-0003/0004）
 - **MVP4 斜杠命令** — REPL 内 `/help` `/session` `/compact` `/model [id]` `/new` `/export [file]` +
   Tab 补全；注册表调度器 + ReplContext 操作面对齐 pi slash-commands.ts，未识别 `/xxx` 原样发 LLM（ADR-0006）
+- **命令面板** — 输 `/` 呼出状态栏面板：↑↓ 选择、实时过滤、Enter 分流（无参即执行/带参填入）、Esc 只关面板；
+  纯状态机 + widget 壳两层（TailTipWidgets 同款公开 API），JLine 3.30.9（ADR-0008）
 - **诊断** — `--doctor` 一条命令打印解析后的 provider/model/baseUrl、key 来源层与掩码值、网关连通性（key 排障入口）
 - **验证** — 290 tests 绿（真实网关测试 `@Tag("gateway")` 默认排除，`mvn test -Pgateway` 显式跑）+ 真实 LLM E2E：
   `read test.txt → write hello.txt` 三轮闭环

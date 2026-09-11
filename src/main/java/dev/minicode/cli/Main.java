@@ -349,6 +349,11 @@ public class Main {
         if (typeAheadSink != null) {
             typeAheadSink.set(reader::runMacro);
         }
+        // 命令面板：输 / 呼出、方向键选择、Esc 取消（Status 状态栏锚定；不支持的终端自动不出现）
+        SlashCommandPanel panel = ctx != null && ctx.dispatcher() != null
+                ? new SlashCommandPanel(reader, ctx.dispatcher()) : null;
+        if (panel != null) panel.enable();
+        try {
         while (true) {
             String line;
             try {
@@ -389,6 +394,9 @@ public class Main {
             runReplTurn(line, activeHistory, activeLoop, style, renderWidth, renderHeight);
             if (onTurnComplete != null) onTurnComplete.run();
             try { reader.getHistory().save(); } catch (IOException ignored) {}
+        }
+        } finally {
+            if (panel != null) panel.disable();
         }
     }
 
