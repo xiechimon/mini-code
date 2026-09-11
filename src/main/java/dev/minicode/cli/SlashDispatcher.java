@@ -1,11 +1,10 @@
 package dev.minicode.cli;
 
 /**
- * 斜杠命令调度器：首 token 精确字面量匹配（大小写不敏感），参数 = 首个空白后的余串。
+ * 对齐 {@code pi/pi-coding-agent/interactive-mode.ts}（onSubmit 命令分发段）：斜杠命令调度器——首 token 精确字面量匹配（大小写不敏感），参数 = 首个空白后的余串。
  * <p>
- * 对齐 pi 的 builtin literal-match（wiki/4）：内置表未命中的 {@code /xxx} 返回
- * {@link Result#NOT_A_COMMAND}，由调用方按 fallthrough 终点语义原样发给 LLM
- * （v1 无扩展/技能/模板中间层，偏离记录见 docs/adr/0006）。
+ * 内置表未命中的 {@code /xxx} 返回 {@link Result#NOT_A_COMMAND}，由调用方按 fallthrough
+ * 终点语义原样发给 LLM（v1 无扩展/技能/模板中间层，偏离记录见 docs/adr/0006、docs/wiki/4）。
  * </p>
  */
 public final class SlashDispatcher {

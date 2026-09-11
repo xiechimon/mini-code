@@ -96,7 +96,7 @@ public record LlmConfig(Model model, String apiKey) {
             case "opencode", "opencode-go" -> firstNonNull(env.get("OPENCODE_API_KEY"), fallback);
             case "deepseek" -> firstNonNull(env.get("DEEPSEEK_API_KEY"), fallback);
             case "openai" -> env.get("OPENAI_API_KEY");
-            case "anthropic" -> firstNonNull(env.get("ANTHROPIC_API_KEY"), env.get("ANTHROPIC_AUTH_TOKEN"));
+            case "anthropic" -> firstNonNull(env.get("ANTHROPIC_AUTH_TOKEN"), env.get("ANTHROPIC_API_KEY"));
             case "minimax-cn" -> firstNonNull(env.get("MINIMAX_CN_API_KEY"), fallback);
             default -> null;
         };

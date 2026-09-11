@@ -21,6 +21,8 @@
         <slf4j.version>2.0.13</slf4j.version>
         <jline.version>3.27.1</jline.version>
         <commonmark.version>0.22.0</commonmark.version>
+        <!-- 真实网关测试（@Tag("gateway")）默认排除：mvn test 确定性本地绿；mvn test -Pgateway 全跑 -->
+        <test.excludedGroups>gateway</test.excludedGroups>
     </properties>
 
     <dependencies>
@@ -98,6 +100,9 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
+                <configuration>
+                    <excludedGroups>${test.excludedGroups}</excludedGroups>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -123,4 +128,14 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- 显式跑真实网关测试：mvn test -Pgateway（需网络与有效 key） -->
+        <profile>
+            <id>gateway</id>
+            <properties>
+                <test.excludedGroups/>
+            </properties>
+        </profile>
+    </profiles>
 </project>

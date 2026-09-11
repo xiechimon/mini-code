@@ -14,11 +14,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 内置斜杠命令表（对齐 pi 的 core/slash-commands.ts 单模块命令表）。
+ * 对齐 {@code pi/pi-coding-agent/interactive-mode.ts}（createBaseAutocompleteProvider 命令表组装段）：内置斜杠命令的单模块注册表与各命令实现。
  * <p>
  * {@link LinkedHashMap} 注册序即 {@code /help} 展示序。{@code /exit} {@code /quit} 走
  * {@code Main.isExitCommand} 特判（与管道截断共用一条路径），不注册进表；
- * 但 {@code /help} 与 Tab 补全仍会列出它们，保证可发现。
+ * 但 {@code /help} 与 Tab 补全仍会列出它们，保证可发现。见 docs/wiki/4、docs/adr/0006。
  * </p>
  */
 public final class SlashCommands {

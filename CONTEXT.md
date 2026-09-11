@@ -33,11 +33,14 @@
 
 ## MVP 切分
 
-- MVP1 (当前): AgentLoop + 4工具 (Read/Write/Edit/Bash) + SystemPrompt + CLI 单句执行 `mini-code "xxx"`；验收 =
+完成状态的唯一真相源是 README「已完成」节，本节只定义切分：
+
+- MVP1: AgentLoop + 4工具 (Read/Write/Edit/Bash) + SystemPrompt + CLI 单句执行 `mini-code "xxx"`；验收 =
   真实文件改动 + `mvn test` 绿
-- MVP2: before/afterToolCall 钩子 + tool 执行并行（权限弹窗为对齐 pi 六 No 的共同省略，见 ADR-0002；门禁如后续需要经 beforeToolCall 钩子作扩展，非内置）
+- MVP2: before/afterToolCall 钩子 + tool 执行并行（权限弹窗为对齐 pi 六 No 的共同省略，见 ADR-0002；门禁经 beforeToolCall 钩子作扩展，非内置）
 - MVP3: Streaming SSE + Session 持久化 + Context 压缩/裁剪
-- MVP4+: PlanMode/Todo、MCP、TUI
+- MVP4: REPL 斜杠命令层——注册表调度、命令自动提示、生命周期命令（见 ADR-0006）
+- MVP5+: PlanMode/Todo、MCP、TUI
 
 ## 关键设计决策
 
@@ -48,7 +51,7 @@
   ，支持 `stopReason` (end/length/error/aborted)
 - 截断策略：Read 工具 `2000行 / 50KB` 先到先截断，与 pi 一致
 - 迭代节奏：直接提交合入 main，验证靠 mvn test 全绿
-- 版本边界：`main` = 最小 MVP1 内核 + `docs/wiki/`
+- 版本边界：`main` = 全部已完成 MVP + `docs/wiki/`（Pi 学习笔记）
 
 ## 术语
 

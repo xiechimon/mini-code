@@ -3,6 +3,7 @@ package dev.minicode.ai;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
@@ -553,6 +554,7 @@ class OpenAiCompatClientStreamingTest {
 
     // ===== 7. 冒烟：真实网关（有 key 时）=====
     @Test
+    @Tag("gateway") // 真实网关：依赖网络与有效 key，默认排除（mvn test 确定性本地绿），mvn test -Pgateway 显式跑
     void realGatewaySmokeIfKeyPresent() throws Exception {
         // model 与 key 同源：一律走 LlmConfig.resolve()（.env/环境变量显式配置优先，
         // auth.json 仅兜底），避免「model 按 .env 的 anthropic、key 却捡到 auth.json 的 opencode」错位

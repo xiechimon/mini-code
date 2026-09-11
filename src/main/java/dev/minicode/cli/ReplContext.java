@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.function.Supplier;
 
 /**
- * REPL 会话级状态容器与斜杠命令操作面（pi InteractiveMode 会话持有的前兆形状）。
+ * 对齐 {@code pi/pi-coding-agent/interactive-mode.ts}（InteractiveMode 的会话持有形状）：REPL 会话级状态容器与斜杠命令操作面。
  * <p>
  * 不可变依赖（构造注入，全程不换）：workdir / llm / tools / systemPrompt / triggerSupplier /
  * maxTurns / sessionsBaseDir / out / style / dispatcher。
