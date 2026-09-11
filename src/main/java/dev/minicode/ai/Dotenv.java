@@ -41,9 +41,10 @@ public final class Dotenv {
     }
 
     /**
-     * 向上遍历目录查找 .env，未找到返回 null
+     * 向上遍历目录查找 .env，未找到返回 null。
+     * public：供 {@code Doctor} 报告实际命中的 .env 路径（向上查找可能命中非预期目录）。
      */
-    static Path findEnvFile(Path start) {
+    public static Path findEnvFile(Path start) {
         Path cur = start.toAbsolutePath().normalize();
         while (cur != null) {
             Path candidate = cur.resolve(".env");

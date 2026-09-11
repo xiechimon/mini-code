@@ -88,6 +88,21 @@ public record LlmConfig(Model model, String apiKey) {
     }
 
     /**
+     * provider 的主 key 环境变量名，供 {@code Doctor} 诊断展示来源层。
+     * 与 {@link #resolve} / {@link #apiKeyForProvider} 的映射保持同步（AGENTS.md 常见陷阱条款）。
+     */
+    public static String envVarNameFor(String provider) {
+        return switch (provider) {
+            case "opencode", "opencode-go" -> "OPENCODE_API_KEY";
+            case "deepseek" -> "DEEPSEEK_API_KEY";
+            case "openai" -> "OPENAI_API_KEY";
+            case "anthropic" -> "ANTHROPIC_AUTH_TOKEN";
+            case "minimax-cn" -> "MINIMAX_CN_API_KEY";
+            default -> "LLM_API_KEY";
+        };
+    }
+
+    /**
      * 按 provider 查询对应的环境变量中的 API Key，供 OpenAiCompatClient 复用，避免两处维护同一张映射表。
      * 与 {@link #resolve} 同策略：env 优先，auth.json 仅兜底（fallback 参数即兜底值）。
      */

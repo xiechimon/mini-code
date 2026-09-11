@@ -48,6 +48,7 @@ public class Main {
         // 帮助信息
         if (args.length == 1 && ("--help".equals(args[0]) || "-h".equals(args[0]))) {
             System.out.println("用法: mini-code \"<你的需求>\"");
+            System.out.println("      mini-code --doctor        # 诊断: 解析后的 provider/model/key 来源 + 网关连通性");
             System.out.println("示例: mini-code \"帮我把 README.md 的标题改成 Hello mini-code\"");
             System.out.println("示例: mini-code \"读取 src/Main.java 并修复其中的空指针问题\"");
             System.out.println();
@@ -60,6 +61,12 @@ public class Main {
             System.out.println("提示: .env 文件会自动从当前目录向上查找到项目根目录");
             System.out.println("提示: 无参直接运行会进入交互式 REPL，多轮对话直到输入 exit");
             System.exit(0);
+        }
+
+        // 诊断：打印解析后的 LLM 配置、key 来源与网关连通性
+        if (args.length == 1 && "--doctor".equals(args[0])) {
+            Doctor.run(System.out);
+            return;
         }
 
         Path workdir = Path.of(System.getProperty("user.dir"));
