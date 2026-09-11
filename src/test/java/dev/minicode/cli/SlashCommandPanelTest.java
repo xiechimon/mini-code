@@ -126,7 +126,7 @@ class SlashCommandPanelTest {
             Thread.sleep(400);
             String afterTab = termOut.toString(StandardCharsets.UTF_8).substring(beforeTab);
             assertFalse(afterTab.contains("(退出 REPL)"), "面板打开时 Tab 不得弹内建补全列表");
-            assertEquals("/help", reader.getBuffer().toString(), "Tab 应把选中项上屏到输入行");
+            assertEquals("/help ", reader.getBuffer().toString(), "Tab 应把选中项上屏到输入行并补空格");
             assertFalse(panel.model().isOpen(), "上屏后面板应关闭");
 
             // ③ 两轮 开→Esc 关→Ctrl-U 清行→再开：固定高度下滚动区不得重算

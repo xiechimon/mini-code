@@ -198,9 +198,10 @@ public final class SlashCommandPanel extends Widgets {
             // 面板未开：透传内建 Tab 补全
             return callBuiltin(LineReader.EXPAND_OR_COMPLETE);
         }
-        // Tab = 上屏（pi 语义：确认即填充，不执行）：选中命令填入输入行，面板关闭
+        // Tab = 上屏（pi 语义：确认即填充，不执行）：选中命令填入输入行 + 尾随空格
+        // （可直接续输参数或回车），面板关闭
         buffer().clear();
-        buffer().write(sel.get().command());
+        buffer().write(sel.get().command() + " ");
         model.close();
         render();
         return true;
