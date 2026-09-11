@@ -17,6 +17,7 @@
 - 参考实现：`earendil-works/pi` (100k stars, TS) — 本项目的 MVP 即 pi 的最小闭环
 - pi 分层：`pi-ai` (统一 LLM API) → `pi-agent-core` (agent-loop + tools + session) → `pi-coding-agent` (CLI) → `pi-tui`
 - mini-code 第一阶段仅复刻 `pi-ai` + `pi-agent-core` 的最小可用子集
+- **MVP5 起语义标的切换为 Claude Code**（内置 MCP / Skill / PlanMode）；pi 对齐到 MVP4 收官，见 ADR-0007
 
 ## opencode 接入（已调研）
 
@@ -40,7 +41,9 @@
 - MVP2: before/afterToolCall 钩子 + tool 执行并行（权限弹窗为对齐 pi 六 No 的共同省略，见 ADR-0002；门禁经 beforeToolCall 钩子作扩展，非内置）
 - MVP3: Streaming SSE + Session 持久化 + Context 压缩/裁剪
 - MVP4: REPL 斜杠命令层——注册表调度、命令自动提示、生命周期命令（见 ADR-0006）
-- MVP5+: PlanMode/Todo、MCP、TUI
+- MVP5: PlanMode——`/plan` 进出、`ExitPlanMode` 工具提交计划待批准、STATEFUL 工具经 beforeToolCall 钩子 BLOCK（见 ADR-0007）；验收 = plan 模式下写类工具全被拦且模型能看到 reason
+- MVP6: Skill——扫描约定目录 `*/SKILL.md`、frontmatter 常驻注入、正文按需加载、`Skill` 工具 + `/skill-name` 双入口；验收 = 放一个 SKILL.md 即可被发现并调用
+- MVP7: MCP（client）——仅 stdio、仅 tools（映射进现有 `Tool` 协议）、配置对齐 `.mcp.json`；验收 = 挂一个真实 MCP server 后其工具出现在列表并可被 LLM 调用
 
 ## 关键设计决策
 
@@ -81,3 +84,6 @@
 - 斜杠命令 (Slash Command): REPL 输入行首为 `/` 的元命令，命中注册表则执行并跳过本轮 LLM 调用；未命中按 fallthrough 终点语义原样发给模型。退出命令（/exit /quit）走 `isExitCommand` 特判、不入注册表（与管道截断共用一条路径）。见 `docs/adr/0006`
 - 命令注册表 (Command Registry): `SlashCommands.builtins()` 的 LinkedHashMap，注册序即 `/help` 展示序；`/help` 与 Tab 补全共用同一份数据源，保证展示与实际命令不漂移
 - 命令自动提示 (Command Autosuggestion): 输入 `/` 即浮现可用命令列表、随输入实时过滤的交互层（JLine `SuggestionType.COMPLETER`），候选带一行说明；对齐 pi「输 / 即出列表」，不靠 Tab。Tab 补全共存：Tab 进入方向键菜单
+- 计划模式 (Plan Mode): `/plan` 进入的只读规划态——STATEFUL 工具经 beforeToolCall 钩子 BLOCK（reason 对模型可见）、READ_ONLY 放行；模型以 `ExitPlanMode` 工具提交计划，用户 y/n 批准后自动切回执行模式。语义标的为 Claude Code PlanMode（ADR-0007）
+- 技能 (Skill): 约定目录（`~/.minicode/skills/` + 项目 `.minicode/skills/`）下的 `*/SKILL.md`；渐进披露——仅 frontmatter 的 name+description 常驻 systemPrompt，正文调用时才载入上下文；双入口 = 模型侧 `Skill` 工具 + 用户侧 `/skill-name` 斜杠命令。语义标的为 Claude Code Skills（ADR-0007）
+- MCP 客户端 (MCP Client): 最小切法 = 仅 client、仅 stdio transport、仅 tools（映射进现有 `Tool` 协议），配置对齐 `.mcp.json`；resources/prompts/HTTP 为后续迭代。语义标的为 Claude Code 的 MCP 接入（ADR-0007）

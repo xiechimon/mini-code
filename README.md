@@ -2,7 +2,7 @@
 
 > 学习 Claude Code / Pi 底层原理的复刻项目：每个功能先跑通 MVP，再持续优化。
 
-**对齐标的：** `earendil-works/pi` (TS, 100k stars) — pi 本身就是按「先 loop+工具跑通，再叠能力」做的。本项目用 Java 对齐其核心抽象（抽象名/边界/语义），并保留已记录的有意简化与偏离（见 `docs/adr/0002`）。
+**对齐标的：** MVP1~4 对齐 `earendil-works/pi` (TS, 100k stars) 的核心抽象（抽象名/边界/语义，有意简化与偏离见 `docs/adr/0002`）；MVP5 起语义标的切换为 Claude Code 的内置 MCP / Skill / PlanMode（见 `docs/adr/0007`）。
 
 ## 已完成 — MVP1 ~ MVP4(斜杠命令)
 
@@ -58,7 +58,9 @@ dev.minicode.cli   — Main                                                     
 - [x] **MVP2** `beforeToolCall`/`afterToolCall` 钩子 + tool 执行并行
 - [x] **MVP3** Streaming SSE + Context 压缩/裁剪 + Session 持久化 (JSONL)
 - [x] **MVP4** 斜杠命令（`/help` `/session` `/compact` `/model` `/new` `/export`）
-- [ ] **MVP5** PlanMode / Todo + MCP + TUI
+- [ ] **MVP5** PlanMode（`/plan` + `ExitPlanMode` 工具 + STATEFUL 工具拦截）
+- [ ] **MVP6** Skill（SKILL.md 渐进披露 + `Skill` 工具 / `/skill-name` 双入口）
+- [ ] **MVP7** MCP client（stdio + tools，配置对齐 `.mcp.json`）
 
 直接提交合入 main，改动验证靠 mvn test 全绿。
 
