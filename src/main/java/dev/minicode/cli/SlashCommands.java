@@ -23,8 +23,8 @@ import java.util.Map;
  */
 public final class SlashCommands {
 
-    /** 一条已注册命令：一行说明 + 行为。 */
-    public record Entry(String description, SlashCommand command) {
+    /** 一条已注册命令：一行说明 + 是否需要参数（命令面板 Enter 分流依据）+ 行为。 */
+    public record Entry(String description, boolean takesArg, SlashCommand command) {
     }
 
     private SlashCommands() {
@@ -33,12 +33,12 @@ public final class SlashCommands {
     /** 内置命令表（注册序 = {@code /help} 展示序）。 */
     public static LinkedHashMap<String, Entry> builtins() {
         LinkedHashMap<String, Entry> m = new LinkedHashMap<>();
-        m.put("help", new Entry("列出全部命令与说明", SlashCommands::help));
-        m.put("session", new Entry("显示会话文件、sessionId、消息数与 token 估算", SlashCommands::session));
-        m.put("compact", new Entry("立即压缩上下文（无视自动阈值）", SlashCommands::compact));
-        m.put("model", new Entry("查看当前模型；/model <id> 切换（限同 provider）", SlashCommands::model));
-        m.put("new", new Entry("开新会话（旧会话 JSONL 留盘）", SlashCommands::newSession));
-        m.put("export", new Entry("导出会话 JSONL：/export [file]", SlashCommands::export));
+        m.put("help", new Entry("列出全部命令与说明", false, SlashCommands::help));
+        m.put("session", new Entry("显示会话文件、sessionId、消息数与 token 估算", false, SlashCommands::session));
+        m.put("compact", new Entry("立即压缩上下文（无视自动阈值）", false, SlashCommands::compact));
+        m.put("model", new Entry("查看当前模型；/model <id> 切换（限同 provider）", true, SlashCommands::model));
+        m.put("new", new Entry("开新会话（旧会话 JSONL 留盘）", false, SlashCommands::newSession));
+        m.put("export", new Entry("导出会话 JSONL：/export [file]", true, SlashCommands::export));
         return m;
     }
 

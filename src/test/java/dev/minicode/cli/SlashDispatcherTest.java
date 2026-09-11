@@ -108,7 +108,7 @@ class SlashDispatcherTest {
     void argsAreRemainderAfterFirstWhitespace() throws Exception {
         AtomicReference<String> captured = new AtomicReference<>();
         LinkedHashMap<String, SlashCommands.Entry> table = new LinkedHashMap<>();
-        table.put("echo", new SlashCommands.Entry("t", (args, ctx) -> captured.set(args)));
+        table.put("echo", new SlashCommands.Entry("t", false, (args, ctx) -> captured.set(args)));
         Fixture f = newFixture(false);
         SlashDispatcher d = new SlashDispatcher(table);
         d.dispatch("/echo  a b  c ", f.ctx);
@@ -191,11 +191,21 @@ class SlashDispatcherTest {
 
     @Test
     void completionNamesFollowDispatcherRegistry() {
-        Map<String, SlashCommands.Entry> table = Map.of("zzz", new SlashCommands.Entry("t", (a, c) -> {
+        Map<String, SlashCommands.Entry> table = Map.of("zzz", new SlashCommands.Entry("t", false, (a, c) -> {
         }));
         List<String> names = SlashCommands.completionNames(new SlashDispatcher(table));
         assertTrue(names.contains("/zzz"), "补全候选应与调度器注册表一致");
         assertFalse(names.contains("/help"));
+    }
+
+    /** takesArg 标记：命令面板 Enter 分流依据——带参命令仅 /model /export（见 .scratch/command-panel/spec.md）。 */
+    @Test
+    void takesArgOnlyModelAndExport() {
+        Map<String, SlashCommands.Entry> table = SlashCommands.builtins();
+        table.forEach((name, e) -> {
+            boolean expect = name.equals("model") || name.equals("export");
+            assertEquals(expect, e.takesArg(), "/" + name + " takesArg 标记不符");
+        });
     }
 
     /**

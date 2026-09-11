@@ -19,7 +19,8 @@
         <junit.version>5.11.0</junit.version>
         <mockito.version>5.11.0</mockito.version>
         <slf4j.version>2.0.13</slf4j.version>
-        <jline.version>3.27.1</jline.version>
+        <!-- 3.30.9:修 3.27.1 clearChoices 不清理 post 导致建议列表残留的 bug(命令面板前置,见 .scratch/command-panel/issues/01) -->
+        <jline.version>3.30.9</jline.version>
         <commonmark.version>0.22.0</commonmark.version>
         <!-- 真实网关测试（@Tag("gateway")）默认排除：mvn test 确定性本地绿；mvn test -Pgateway 全跑 -->
         <test.excludedGroups>gateway</test.excludedGroups>
